@@ -295,8 +295,22 @@ public class MainActivity extends Activity {
         status.setTextColor(connected ? ACCENT_GRN : ACCENT_RED);
     }
 
+    /** Последний текст, который показан в окне вывода (нужен, чтобы добавить поправку пробега без потери текста). */
+    private volatile String lastShown = "";
+
     private void show(String text) {
+        lastShown = text;
         runOnUiThread(() -> output.setText(text));
+    }
+
+    /** Показать поправку пробега сверху уже выведенного текста. */
+    private void refreshKmLine() {
+        String base = lastShown == null ? "" : lastShown;
+        if (base.startsWith("ПРОБЕГ С ПОПРАВКОЙ")) {
+            int cut = base.indexOf("\n\n");
+            base = cut >= 0 ? base.substring(cut + 2) : "";
+        }
+        show(kmCorrectionText() + base);
     }
 
     private void setStatus(String text) {
@@ -734,7 +748,7 @@ public class MainActivity extends Activity {
                         long real = Long.parseLong(et.getText().toString().trim());
                         ExtraStore.setKmOffset(this, lastVin, real - raw);
                         toast("Пробег сохранён: " + real + " км");
-                        show(lastScanText.isEmpty() ? "" : kmCorrectionText() + lastScanText);
+                        refreshKmLine();
                     } catch (NumberFormatException e) {
                         toast("Введи число, например 259516");
                     }
@@ -742,6 +756,7 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Сбросить", (d, w) -> {
                     ExtraStore.setKmOffset(this, lastVin, 0L);
                     toast("Поправка сброшена");
+                    refreshKmLine();
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
