@@ -249,8 +249,8 @@ public class MainActivity extends Activity {
         btnNote = makeButton("✏️  Заметка к машине", ACCENT_ORG, v -> editNote());
         btnTg   = makeButton("✈️  Telegram",          ACCENT_ORG, v -> telegramDialog());
         root.addView(row(btnNote, btnTg));
-        btnKm = makeButton("🔧  Поправить пробег", ACCENT_ORG, v -> editKm());
-        root.addView(row(btnKm, new View(this)));
+        btnKm = makePrimaryButton("🔧  Поправить пробег", ACCENT_ORG, v -> editKm());
+        root.addView(btnKm);
 
         root.addView(spacer(10));
 
