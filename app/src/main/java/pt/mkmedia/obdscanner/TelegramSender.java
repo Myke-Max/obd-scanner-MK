@@ -11,7 +11,17 @@ public final class TelegramSender {
 
     public static String send(String token, String chatId, String text) {
         if (token.isEmpty() || chatId.isEmpty()) return "не заполнены токен или номер чата";
-        if (text.length() > 4000) text = text.substring(0, 4000) + "\n…(обрезано)";
+        while (text.length() > 3900) {
+            int cut = text.lastIndexOf('\n', 3900);
+            if (cut < 1000) cut = 3900;
+            String err = sendOne(token, chatId, text.substring(0, cut));
+            if (err != null) return err;
+            text = text.substring(cut).trim();
+        }
+        return text.isEmpty() ? null : sendOne(token, chatId, text);
+    }
+
+    private static String sendOne(String token, String chatId, String text) {
         HttpURLConnection c = null;
         try {
             URL u = new URL("https://api.telegram.org/bot" + token + "/sendMessage");

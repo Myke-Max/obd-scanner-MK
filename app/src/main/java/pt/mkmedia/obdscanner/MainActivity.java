@@ -383,6 +383,8 @@ public class MainActivity extends Activity {
         lastDtcText = "";
         lastLiveText = "";
         lastScanText = "";
+        sessionAnomalies.clear();
+        EcuScanner.lastClusterKm = -1; // пробег прошлой машины не должен попасть к новой
         deviceName = dev.getName() != null ? dev.getName() : dev.getAddress();
         setStatus("Подключаюсь к " + deviceName + "…");
         show("Подключаюсь. Это может занять до 15 секунд…");
@@ -488,7 +490,6 @@ public class MainActivity extends Activity {
             if (EcuScanner.maybeVag(vin)) {
                 sb.append("Это стандартные ошибки двигателя. Ниже — ошибки всех остальных блоков VAG:\n\n");
                 sb.append(EcuScanner.readVagFaults(obd));
-                sb.append(kmCorrectionText());
             }
             HistoryStore.Entry cur = new HistoryStore.Entry(System.currentTimeMillis(), vin, mil,
                     found.get(0), found.get(1), found.get(2));
@@ -503,7 +504,7 @@ public class MainActivity extends Activity {
             }
             HistoryStore.append(getFilesDir(), cur);
             lastDtcText = sb.toString();
-            show(lastDtcText);
+            show(kmCorrectionText() + lastDtcText);
             if (ExtraStore.autoSend(this)) {
                 String err = TelegramSender.send(ExtraStore.token(this), ExtraStore.chat(this), buildReportText());
                 toast(err == null ? "Отчёт отправлен в Telegram" : "В Telegram не отправилось: " + err);
@@ -515,7 +516,7 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("Стереть ошибки?")
                 .setMessage("Это нельзя отменить. Сохранённые ошибки и данные «замороженного кадра» пропадут, лампа погаснет.\n\n"
-                        + "Если вы осматриваете машину перед покупкой — сначала прочитайте ошибки и сохраните отчёт: "
+                        + "Стираются только ошибки двигателя. Если вы осматриваете машину перед покупкой — сначала прочитайте ошибки и сохраните отчёт: "
                         + "после стирания проблемы не видны, пока не вернутся.")
                 .setPositiveButton("Стереть", (d, w) -> clearDtc())
                 .setNegativeButton("Отмена", null)
@@ -528,7 +529,7 @@ public class MainActivity extends Activity {
             AppLog.log("Пользователь стирает ошибки");
             String raw = obd.send("04", 6000);
             if (ObdParser.findData(raw, 4, -1) != null) {
-                show("Ошибки стёрты. Если проблема осталась, лампа и ошибки вернутся.");
+                show("Ошибки двигателя стёрты (стандартным способом). Ошибки других блоков — ABS, центральная электроника, приборка и т.д. — этим способом не стираются. Если проблема осталась, ошибки вернутся.");
             } else {
                 show("Машина не подтвердила стирание. Попробуйте при включённом зажигании и заглушенном двигателе.");
             }
@@ -651,6 +652,7 @@ public class MainActivity extends Activity {
             if (!note.isEmpty()) sb.append("Заметка: ").append(note).append("\n");
         }
         sb.append("\n");
+        sb.append(kmCorrectionText());
         sb.append(lastDtcText.isEmpty() ? "Ошибки: ещё не читались\n\n" : lastDtcText + "\n");
         if (!sessionAnomalies.isEmpty()) {
             sb.append("ЗАМЕЧЕННЫЕ АНОМАЛИИ (признаки, а не диагноз):\n");
@@ -658,7 +660,7 @@ public class MainActivity extends Activity {
             sb.append("\n");
         }
         if (!lastLiveText.isEmpty()) sb.append(lastLiveText).append("\n");
-        if (!lastScanText.isEmpty()) sb.append(kmCorrectionText()).append(lastScanText);
+        if (!lastScanText.isEmpty()) sb.append(lastScanText);
         return sb.toString();
     }
 

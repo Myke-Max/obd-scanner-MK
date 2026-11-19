@@ -25,6 +25,15 @@ public class ObdConnection {
 
     /** Подключается и настраивает адаптер. */
     public void connect(BluetoothDevice device) throws IOException {
+        try {
+            connectInner(device);
+        } catch (IOException | RuntimeException e) {
+            close(); // иначе при повторной попытке адаптер часто отвечает «занято»
+            throw e;
+        }
+    }
+
+    private void connectInner(BluetoothDevice device) throws IOException {
         AppLog.log("Подключение к " + device.getName() + " " + device.getAddress());
         BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
         if (adapter != null) adapter.cancelDiscovery();

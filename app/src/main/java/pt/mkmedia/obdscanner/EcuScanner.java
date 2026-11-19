@@ -184,6 +184,7 @@ public final class EcuScanner {
                 // 19 02 FF — все записи блока. Блок отдаёт и «просто не проверялось» —
                 // настоящая ошибка только если стоит бит: 01 сейчас, 04 ожидает, 08 подтверждена.
                 List<Integer> dtc = udsRequest(obd, "1902FF", 4000);
+                int blockStart = sb.length();
                 sb.append(name).append(":\n");
                 if (dtc != null) answered++;
                 else sb.append("  на запрос ошибок не отвечает\n");
@@ -214,8 +215,9 @@ public final class EcuScanner {
                             .append(String.format(Locale.ROOT, "%02X", dtc.get(2))).append(")\n");
                 }
 
+                long km = -1;
                 if (!"-".equals(odoDid)) {
-                    long km = readOdometerDid(obd, odoDid);
+                    km = readOdometerDid(obd, odoDid);
                     if (km > 0) {
                         sb.append("  Пробег в блоке: ").append(km).append(" км\n");
                         odoByBlock.add(name + ": " + km + " км");
@@ -223,7 +225,9 @@ public final class EcuScanner {
                         if (name.startsWith("17")) { clusterKm = km; clusterSrc = name; }
                     }
                 }
-                sb.append("\n");
+                // Блок батареи есть только у электро/гибридов — на обычной машине молча пропускаем
+                if (tx.equals("7E5") && dtc == null && km <= 0) sb.setLength(blockStart);
+                else sb.append("\n");
             }
         } catch (Exception e) {
             sb.append("Ошибка при опросе блоков VAG: ").append(e.getMessage()).append("\n");

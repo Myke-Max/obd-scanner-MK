@@ -73,7 +73,7 @@ public final class AnomalyDetector {
         rule("oil", oil != null && oil > 140,
                 "Масло перегрето (выше 140 °C)", out);
 
-        rule("lowv", running && volt != null && volt < 13.0,
+        rule("lowv", running && volt != null && volt < 12.5,
                 "Низкое напряжение при работающем двигателе (генератор или аккумулятор)", out);
         rule("highv", running && volt != null && volt > 15.0,
                 "Слишком высокое напряжение бортсети (регулятор генератора)", out);
