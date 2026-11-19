@@ -92,6 +92,22 @@ public final class ObdParser {
         return "6789BC".indexOf(s.charAt(0)) >= 0;
     }
 
+    /**
+     * Какие блоки ответили на общий запрос (адаптер в режиме ATH1, 11-битный CAN).
+     * Возвращает идентификаторы ответов, например "7E8", "7E9".
+     */
+    public static List<String> canResponders(String raw) {
+        Set<String> ids = new LinkedHashSet<>();
+        for (String line : raw.split("[\\r\\n]+")) {
+            String s = line.replace(" ", "").replace(">", "").toUpperCase(Locale.ROOT);
+            if (s.length() >= 5 && isHexString(s) && s.startsWith("7E")
+                    && s.charAt(2) >= '8' && s.charAt(2) <= 'F') {
+                ids.add(s.substring(0, 3));
+            }
+        }
+        return new ArrayList<>(ids);
+    }
+
     public static String dtcCode(int a, int b) {
         char letter = "PCBU".charAt((a >> 6) & 3);
         int d2 = (a >> 4) & 3;
@@ -119,15 +135,20 @@ public final class ObdParser {
         return new ArrayList<>(codes);
     }
 
-    /** VIN из ответа на 09 02. Работает и для CAN, и для старых протоколов. */
-    public static String parseVin(String raw) {
+    /** Текст из ответа режима 09 (VIN, имя блока, номер калибровки). Работает для CAN и старых протоколов. */
+    public static String asciiPayload(String raw, int mode, int pid) {
         StringBuilder sb = new StringBuilder();
-        for (List<Integer> r : findAllData(raw, 9, 2)) {
+        for (List<Integer> r : findAllData(raw, mode, pid)) {
             for (int b : r) {
                 if (b >= 0x20 && b < 0x7F) sb.append((char) b);
             }
         }
-        return sb.toString();
+        return sb.toString().trim();
+    }
+
+    /** VIN из ответа на 09 02. */
+    public static String parseVin(String raw) {
+        return asciiPayload(raw, 9, 2);
     }
 
     /** Список PID, которые показываем в «живых данных». */
@@ -135,55 +156,118 @@ public final class ObdParser {
             0x0C, 0x0D, 0x05, 0x5C, 0x04, 0x11, 0x0B, 0x10, 0x0F, 0x06, 0x07, 0x2F, 0x42
     };
 
-    /** Готовая строка вида «Обороты двигателя: 850 об/мин» или null, если данных мало. */
-    public static String describePid(int pid, List<Integer> d) {
+    /** PID, связанные с пробегом (стандартные). */
+    public static final int[] MILEAGE_PIDS = {0xA6, 0x31, 0x21, 0x4D, 0x4E};
+
+    /** Числовое значение PID или null, если данных мало / PID неизвестен. */
+    public static Double value(int pid, List<Integer> d) {
         int n = d.size();
         switch (pid) {
             case 0x0C:
-                if (n < 2) return null;
-                return fmt("Обороты двигателя", (d.get(0) * 256 + d.get(1)) / 4.0, 0, "об/мин");
+                return n >= 2 ? (d.get(0) * 256 + d.get(1)) / 4.0 : null;
             case 0x0D:
-                if (n < 1) return null;
-                return fmt("Скорость", d.get(0), 0, "км/ч");
+                return n >= 1 ? (double) d.get(0) : null;
             case 0x05:
-                if (n < 1) return null;
-                return fmt("Охлаждающая жидкость", d.get(0) - 40, 0, "°C");
             case 0x5C:
-                if (n < 1) return null;
-                return fmt("Температура масла", d.get(0) - 40, 0, "°C");
-            case 0x04:
-                if (n < 1) return null;
-                return fmt("Нагрузка двигателя", d.get(0) * 100.0 / 255, 0, "%");
-            case 0x11:
-                if (n < 1) return null;
-                return fmt("Положение дросселя", d.get(0) * 100.0 / 255, 0, "%");
-            case 0x0B:
-                if (n < 1) return null;
-                return fmt("Давление во впуске", d.get(0), 0, "кПа");
-            case 0x10:
-                if (n < 2) return null;
-                return fmt("Расход воздуха (MAF)", (d.get(0) * 256 + d.get(1)) / 100.0, 1, "г/с");
             case 0x0F:
-                if (n < 1) return null;
-                return fmt("Температура впуска", d.get(0) - 40, 0, "°C");
-            case 0x06:
-                if (n < 1) return null;
-                return fmt("Коррекция топлива (короткая)", (d.get(0) - 128) * 100.0 / 128, 1, "%");
-            case 0x07:
-                if (n < 1) return null;
-                return fmt("Коррекция топлива (длинная)", (d.get(0) - 128) * 100.0 / 128, 1, "%");
+                return n >= 1 ? (double) (d.get(0) - 40) : null;
+            case 0x04:
+            case 0x11:
             case 0x2F:
-                if (n < 1) return null;
-                return fmt("Уровень топлива", d.get(0) * 100.0 / 255, 0, "%");
+                return n >= 1 ? d.get(0) * 100.0 / 255 : null;
+            case 0x0B:
+                return n >= 1 ? (double) d.get(0) : null;
+            case 0x10:
+                return n >= 2 ? (d.get(0) * 256 + d.get(1)) / 100.0 : null;
+            case 0x06:
+            case 0x07:
+                return n >= 1 ? (d.get(0) - 128) * 100.0 / 128 : null;
             case 0x42:
-                if (n < 2) return null;
-                return fmt("Напряжение бортсети", (d.get(0) * 256 + d.get(1)) / 1000.0, 1, "В");
+                return n >= 2 ? (d.get(0) * 256 + d.get(1)) / 1000.0 : null;
+            case 0x31:
+            case 0x21:
+            case 0x4D:
+            case 0x4E:
+                return n >= 2 ? (double) (d.get(0) * 256 + d.get(1)) : null;
+            case 0xA6:
+                if (n < 4) return null;
+                long v = ((long) d.get(0) << 24) | ((long) d.get(1) << 16) | ((long) d.get(2) << 8) | d.get(3);
+                return v / 10.0;
             default:
                 return null;
         }
     }
 
-    private static String fmt(String name, double value, int decimals, String unit) {
-        return name + ": " + String.format(Locale.ROOT, "%." + decimals + "f", value) + " " + unit;
+    public static String name(int pid) {
+        switch (pid) {
+            case 0x0C: return "Обороты двигателя";
+            case 0x0D: return "Скорость";
+            case 0x05: return "Охлаждающая жидкость";
+            case 0x5C: return "Температура масла";
+            case 0x04: return "Нагрузка двигателя";
+            case 0x11: return "Положение дросселя";
+            case 0x0B: return "Давление во впуске";
+            case 0x10: return "Расход воздуха (MAF)";
+            case 0x0F: return "Температура впуска";
+            case 0x06: return "Коррекция топлива (короткая)";
+            case 0x07: return "Коррекция топлива (длинная)";
+            case 0x2F: return "Уровень топлива";
+            case 0x42: return "Напряжение бортсети";
+            case 0xA6: return "Общий пробег (одометр)";
+            case 0x31: return "Пробег с момента стирания ошибок";
+            case 0x21: return "Пробег с горящей лампой Check Engine";
+            case 0x4D: return "Время работы с горящей лампой";
+            case 0x4E: return "Время с момента стирания ошибок";
+            default: return "PID " + Integer.toHexString(pid).toUpperCase(Locale.ROOT);
+        }
+    }
+
+    public static String unit(int pid) {
+        switch (pid) {
+            case 0x0C: return "об/мин";
+            case 0x0D: return "км/ч";
+            case 0x05:
+            case 0x5C:
+            case 0x0F: return "°C";
+            case 0x04:
+            case 0x11:
+            case 0x2F:
+            case 0x06:
+            case 0x07: return "%";
+            case 0x0B: return "кПа";
+            case 0x10: return "г/с";
+            case 0x42: return "В";
+            case 0xA6:
+            case 0x31:
+            case 0x21: return "км";
+            case 0x4D:
+            case 0x4E: return "мин";
+            default: return "";
+        }
+    }
+
+    public static int decimals(int pid) {
+        switch (pid) {
+            case 0x10:
+            case 0x06:
+            case 0x07:
+            case 0x42:
+            case 0xA6:
+                return 1;
+            default:
+                return 0;
+        }
+    }
+
+    /** Значение с единицей: «850 об/мин». */
+    public static String formatValue(int pid, double v) {
+        return String.format(Locale.ROOT, "%." + decimals(pid) + "f", v) + " " + unit(pid);
+    }
+
+    /** Готовая строка вида «Обороты двигателя: 850 об/мин» или null, если данных мало. */
+    public static String describePid(int pid, List<Integer> d) {
+        Double v = value(pid, d);
+        if (v == null) return null;
+        return name(pid) + ": " + formatValue(pid, v);
     }
 }

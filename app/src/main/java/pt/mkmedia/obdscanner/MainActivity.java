@@ -35,7 +35,7 @@ public class MainActivity extends Activity {
 
     private TextView status;
     private TextView output;
-    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare, btnHistory, btnLog;
+    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare, btnHistory, btnLog, btnScan;
 
     private ObdConnection obd;
     private String deviceName = "";
@@ -109,12 +109,13 @@ public class MainActivity extends Activity {
         btnVin = makeButton("Номер VIN", v -> readVin());
         root.addView(row(btnLive, btnVin));
 
-        btnShare = makeButton("Отправить отчёт", v -> shareReport());
+        btnScan = makeButton("Сканировать блоки и пробег", v -> scanEcus());
         btnHistory = makeButton("История проверок", v -> showHistory());
-        root.addView(row(btnShare, btnHistory));
+        root.addView(row(btnScan, btnHistory));
 
-        btnLog = makeButton("Отправить журнал (для поддержки)", v -> shareLog());
-        root.addView(btnLog);
+        btnShare = makeButton("Отправить отчёт", v -> shareReport());
+        btnLog = makeButton("Отправить журнал", v -> shareLog());
+        root.addView(row(btnShare, btnLog));
 
         ScrollView scroll = new ScrollView(this);
         output = new TextView(this);
@@ -134,6 +135,7 @@ public class MainActivity extends Activity {
         btnClear.setEnabled(connected);
         btnLive.setEnabled(connected);
         btnVin.setEnabled(connected);
+        btnScan.setEnabled(connected);
         status.setText(connected ? "Подключено: " + deviceName : "Не подключено");
     }
 
@@ -203,6 +205,7 @@ public class MainActivity extends Activity {
         lastVin = "";
         lastDtcText = "";
         lastLiveText = "";
+        lastScanText = "";
         deviceName = dev.getName() != null ? dev.getName() : dev.getAddress();
         setStatus("Подключаюсь к " + deviceName + "…");
         show("Подключаюсь. Это может занять до 15 секунд…");
@@ -354,19 +357,26 @@ public class MainActivity extends Activity {
 
     // ---------- живые данные ----------
 
+    private final Set<String> sessionAnomalies = new java.util.concurrent.CopyOnWriteArraySet<>();
+    private String lastScanText = "";
+
     private void toggleLive() {
         if (liveRunning) {
             liveRunning = false;
             return;
         }
         liveRunning = true;
+        sessionAnomalies.clear();
         runOnUiThread(() -> btnLive.setText("Остановить"));
         worker.submit(() -> {
             Set<Integer> unsupported = new HashSet<>();
+            AnomalyDetector detector = new AnomalyDetector();
+            Set<String> prevWarn = new HashSet<>();
             boolean first = true;
             try {
                 while (liveRunning && obd != null) {
-                    StringBuilder sb = new StringBuilder("ЖИВЫЕ ДАННЫЕ (обновляются)\n\n");
+                    StringBuilder data = new StringBuilder();
+                    java.util.Map<Integer, Double> vals = new java.util.HashMap<>();
                     obd.logTraffic = first;
                     for (int pid : ObdParser.LIVE_PIDS) {
                         if (!liveRunning) break;
@@ -377,14 +387,36 @@ public class MainActivity extends Activity {
                         if (line == null) {
                             if (first) unsupported.add(pid);
                         } else {
-                            sb.append(line).append("\n");
+                            data.append(line).append("\n");
+                            Double v = ObdParser.value(pid, d);
+                            if (v != null) vals.put(pid, v);
                         }
                     }
                     first = false;
                     if (liveRunning) {
+                        List<String> warns = detector.update(vals, System.currentTimeMillis());
+                        StringBuilder sb = new StringBuilder("ЖИВЫЕ ДАННЫЕ (обновляются)\n\n");
+                        if (warns.isEmpty()) {
+                            sb.append("Аномалий не замечено.\n\n");
+                        } else {
+                            sb.append("⚠ ВОЗМОЖНЫЕ АНОМАЛИИ (признаки, а не диагноз):\n");
+                            for (String w : warns) {
+                                sb.append(" • ").append(w).append("\n");
+                                if (!prevWarn.contains(w)) AppLog.log("АНОМАЛИЯ: " + w);
+                                sessionAnomalies.add(w);
+                            }
+                            sb.append("\n");
+                        }
+                        prevWarn = new HashSet<>(warns);
+                        sb.append(data);
                         lastLiveText = sb.toString();
                         show(lastLiveText);
                     }
+                }
+                String stats = detector.statsText();
+                if (!stats.isEmpty()) {
+                    lastLiveText = lastLiveText + "\nСВОДКА ЗА СЕАНС (от … до):\n" + stats;
+                    show(lastLiveText);
                 }
             } catch (IOException e) {
                 AppLog.logError("живые данные", e);
@@ -398,6 +430,18 @@ public class MainActivity extends Activity {
         });
     }
 
+    // ---------- сканирование блоков ----------
+
+    private void scanEcus() {
+        show("Сканирую блоки управления… Это может занять до минуты. Двигатель лучше не заводить, зажигание включить.");
+        runTask(() -> {
+            String r = EcuScanner.scan(obd);
+            lastScanText = r;
+            AppLog.log("Скан блоков завершён");
+            show(r);
+        });
+    }
+
     // ---------- отчёт ----------
 
     private void shareReport() {
@@ -407,7 +451,13 @@ public class MainActivity extends Activity {
         if (!lastVin.isEmpty()) sb.append("VIN: ").append(lastVin).append("\n");
         sb.append("\n");
         sb.append(lastDtcText.isEmpty() ? "Ошибки: ещё не читались\n\n" : lastDtcText + "\n");
-        if (!lastLiveText.isEmpty()) sb.append(lastLiveText);
+        if (!sessionAnomalies.isEmpty()) {
+            sb.append("ЗАМЕЧЕННЫЕ АНОМАЛИИ (признаки, а не диагноз):\n");
+            for (String w : sessionAnomalies) sb.append(" • ").append(w).append("\n");
+            sb.append("\n");
+        }
+        if (!lastLiveText.isEmpty()) sb.append(lastLiveText).append("\n");
+        if (!lastScanText.isEmpty()) sb.append(lastScanText);
         Intent i = new Intent(Intent.ACTION_SEND);
         i.setType("text/plain");
         i.putExtra(Intent.EXTRA_SUBJECT, "Отчёт OBD");
