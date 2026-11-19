@@ -17,13 +17,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
-          cache-disabled: true
       - name: Setup keystore
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
         run: printf '%s' "$KEYSTORE_B64" | base64 --decode > app/obd-release.jks
       - name: Build
-        run: gradle assembleDebug --no-daemon --refresh-dependencies
+        run: gradle assembleDebug --no-daemon
       - name: Save APK
         uses: actions/upload-artifact@v4
         with:
