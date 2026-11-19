@@ -98,40 +98,65 @@ public final class EcuScanner {
      * Работает на MQB (Golf VII, Octavia A7, Audi A3 8V и др., 2013+).
      * DID 0xF442 — одометр в км.
      */
+    // DIDs для одометра VAG (приборная панель 7C0→7C8)
+    // Источник: VCDS label files, VAG-COM community databases
+    private static final String[] VAG_CLUSTER_DIDS = {
+        "22F442",  // MQB стандарт (Golf VII, Octavia A7, Audi A3 8V)
+        "22F40A",  // альтернативный MQB
+        "22F40C",  // некоторые VAG 2015+
+        "22284F",  // PQ35/PQ46 (Octavia II, Golf V/VI)
+        "222801",  // старые VAG CAN
+        "22F450",  // Audi MQB вариант
+    };
+
     private static String readVagInstrumentCluster(ObdConnection obd) {
         StringBuilder sb = new StringBuilder();
+        StringBuilder debugSb = new StringBuilder("ПРИБОРНАЯ ПАНЕЛЬ (VAG 7C0)\n\n");
         try {
-            // Переключаемся на прямой диалог с приборной панелью
             obd.send("ATH1", 1500);
             obd.send("ATSH 7C0", 1500);
             obd.send("ATCRA 7C8", 1500);
 
-            // UDS ReadDataByIdentifier (22) DID F4 42
-            String raw = obd.send("22F442", 4000);
-            if (raw == null || raw.trim().isEmpty() || raw.contains("NO DATA") || raw.contains("ERROR")) {
-                // Пробуем альтернативный DID 0xF40A (тоже используется в VAG)
-                raw = obd.send("22F40A", 4000);
-            }
-
-            if (raw != null && !raw.trim().isEmpty() && !raw.contains("NO DATA") && !raw.contains("ERROR")) {
-                // Ответ UDS: 62 F4 42 XX XX XX (3 байта = км, big-endian)
-                String hex = raw.replaceAll("[^0-9A-Fa-f]", "");
-                // Ищем заголовок ответа 62F4
-                int idx = hex.toUpperCase(Locale.ROOT).indexOf("62F4");
-                if (idx >= 0 && hex.length() >= idx + 10) {
-                    String payload = hex.substring(idx + 6, idx + 12); // 3 байта после 62 F4 42/0A
-                    long km = Long.parseLong(payload, 16);
-                    if (km > 0 && km < 2000000) {
-                        sb.append("ПРИБОРНАЯ ПАНЕЛЬ (реальный пробег)\n\n");
-                        sb.append("  Пробег одометра: ").append(km).append(" км\n\n");
-                        return sb.toString();
+            for (String did : VAG_CLUSTER_DIDS) {
+                String raw = obd.send(did, 3000);
+                debugSb.append("  ").append(did).append(": ")
+                       .append(raw == null ? "null" : raw.trim()).append("\n");
+                if (raw != null && !raw.contains("NO DATA") && !raw.contains("ERROR")
+                        && !raw.trim().isEmpty()) {
+                    String hex = raw.replaceAll("[^0-9A-Fa-f]", "").toUpperCase(Locale.ROOT);
+                    // Ищем ответ UDS 62 + DID (4 hex символа после "62")
+                    String didHex = did.substring(2).toUpperCase(Locale.ROOT);
+                    int idx = hex.indexOf("62" + didHex);
+                    if (idx >= 0) {
+                        int dataStart = idx + 6; // пропускаем "62" + DID (4 символа)
+                        // Пробуем 3 байта (24 бита) = до 16 млн км
+                        if (hex.length() >= dataStart + 6) {
+                            long km = Long.parseLong(hex.substring(dataStart, dataStart + 6), 16);
+                            if (km > 0 && km < 2000000) {
+                                sb.append("ПРИБОРНАЯ ПАНЕЛЬ — реальный пробег одометра\n\n");
+                                sb.append("  Пробег: ").append(km).append(" км\n");
+                                sb.append("  (DID: ").append(did).append(")\n\n");
+                                return sb.toString();
+                            }
+                        }
+                        // Пробуем 4 байта (32 бита)
+                        if (hex.length() >= dataStart + 8) {
+                            long km = Long.parseLong(hex.substring(dataStart, dataStart + 8), 16);
+                            if (km > 0 && km < 2000000) {
+                                sb.append("ПРИБОРНАЯ ПАНЕЛЬ — реальный пробег одометра\n\n");
+                                sb.append("  Пробег: ").append(km).append(" км\n");
+                                sb.append("  (DID: ").append(did).append(")\n\n");
+                                return sb.toString();
+                            }
+                        }
                     }
                 }
             }
-            sb.append("Приборная панель: не ответила на запрос пробега.\n")
-              .append("(Это нормально для некоторых авто — стандарт OBD не обязывает панель отвечать.)\n");
+            // Не нашли — показываем отладочные данные чтобы разобраться
+            sb.append(debugSb);
+            sb.append("  → Пробег не удалось прочитать. Сырые данные выше помогут найти нужный DID.\n\n");
         } catch (Exception e) {
-            sb.append("Приборная панель: ошибка при чтении — ").append(e.getMessage()).append("\n");
+            sb.append("Приборная панель: ошибка — ").append(e.getMessage()).append("\n");
         } finally {
             try {
                 obd.send("ATAR", 1500);
