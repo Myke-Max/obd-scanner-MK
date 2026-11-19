@@ -19,21 +19,9 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    signingConfigs {
-        stable {
-            storeFile file("obd-release.jks")
-            storePassword "obdscanner2024"
-            keyAlias "obd"
-            keyPassword "obdscanner2024"
-        }
-    }
-
     buildTypes {
         debug {
-            def ks = file("obd-release.jks")
-            if (ks.exists()) {
-                signingConfig signingConfigs.stable
-            }
+            // подписывается дефолтным debug ключом Android
         }
         release {
             minifyEnabled false
