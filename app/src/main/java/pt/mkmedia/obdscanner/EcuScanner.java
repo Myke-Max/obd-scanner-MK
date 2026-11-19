@@ -115,112 +115,167 @@ public final class EcuScanner {
         return sb.toString();
     }
 
-    /**
-     * Читает пробег из приборной панели VAG по UDS (адрес 7C0).
-     * Работает на MQB (Golf VII, Octavia A7, Audi A3 8V и др., 2013+).
-     * DID 0xF442 — одометр в км.
-     */
-    // Адреса модулей VAG для поиска пробега
-    // Формат: { "TX_header", "RX_filter", "название", DID1, DID2, ... }
-    // MQB (Octavia A7, Golf 7, Audi A3 8V): панель на 717→777, шлюз 710→770, ABS 713→773
-    // PQ35 (Octavia II, Golf V/VI): панель 7C0→7C8
-    // Формат: { "TX", "RX", "название", "METERS:1_если_в_метрах", DID1, DID2, ... }
-    // METERS:1 = значение в метрах (делить на 1000 для км), METERS:0 = уже в км
+    // ===================== VAG (VW, Audi, Škoda, SEAT) =====================
+    // Диагностические адреса VAG на CAN: ответ = запрос + 0x6A.
+    // Номер блока в VCDS (17, 19, 03...) — это НЕ CAN-адрес.
+    // Источник адресов 713/77D и 714/77E и DID 2203: проект OVMS (vehicle_vweup, vweup_obd.h).
+    // Формат: { запрос, ответ, название, читать_пробег(1/0) }
     private static final String[][] VAG_MODULES = {
-        // MQB приборная панель (адрес 17 в VCDS = 0x717 ELM) — значения в км
-        {"717", "777", "Приборная панель MQB (17→77)", "METERS:0", "22F442", "22F40A", "22F450", "222801"},
-        // MQB шлюз (адрес 19 = 0x719) — хранит копию пробега в км
-        {"719", "779", "Шлюз MQB (19→79)", "METERS:0", "22F442", "22F40A", "222801"},
-        // MQB ABS (адрес 13 = 0x713) — тоже хранит пробег в км
-        {"713", "773", "ABS MQB (13→73)", "METERS:0", "22F442", "22F40A", "222801"},
-        // PQ35 приборная панель (старый адрес 7C0) — значения в км
-        {"7C0", "7C8", "Приборная панель PQ35 (7C0→7C8)", "METERS:0", "22F442", "22284F", "222801", "22F40A"},
-        // Движок хранит пробег в МЕТРАХ — делим на 1000
-        // F442=частичный, 2003=полный пробег в метрах (VAG ECU стандарт)
-        {"7E0", "7E8", "Блок двигателя (7E0→7E8)", "METERS:1", "222003", "22F442", "22284F", "22F40A"},
+        {"7E0", "7E8", "01 Двигатель", "0"},
+        {"7E1", "7E9", "02 Коробка передач", "0"},
+        {"713", "77D", "03 ABS / тормоза", "1"},
+        {"70E", "778", "09 Центральная электроника", "1"},
+        {"715", "77F", "15 Подушки безопасности", "0"},
+        {"712", "77C", "44 Усилитель руля", "1"},
+        {"714", "77E", "17 Приборная панель", "1"},
+        {"710", "77A", "19 Шлюз (Gateway)", "1"},
     };
 
+    // DID пробега: 2203 — пробег в приборке VAG (OVMS: VWUP_MFD_ODOMETER), F4A6 — OBD-пробег через UDS
+    private static final String[] VAG_ODO_DIDS = {"2203", "F4A6"};
+
     private static String readVagInstrumentCluster(ObdConnection obd) {
-        StringBuilder sb = new StringBuilder();
-        StringBuilder debugSb = new StringBuilder("ПОИСК ОДОМЕТРА VAG\n\n");
+        StringBuilder sb = new StringBuilder("БЛОКИ VAG (ошибки и пробег)\n\n");
+        List<long[]> odos = new ArrayList<>(); // {км}
+        List<String> odoSrc = new ArrayList<>();
+        int answered = 0;
         try {
-            obd.send("ATH1", 1500);
+            obd.send("ATH0", 1500);
+            obd.send("ATCAF1", 1000);
             obd.send("ATAT 1", 1000);
-            obd.send("ATST FF", 1000); // максимальный таймаут
+            obd.send("ATST 96", 1000); // ~600 мс ожидания ответа
+            obd.send("ATFCSD 30 00 00", 1000);
 
-            for (String[] module : VAG_MODULES) {
-                String txAddr = module[0];
-                String rxAddr = module[1];
-                String moduleName = module[2];
-
-                obd.send("ATSH " + txAddr, 1500);
-                obd.send("ATCRA " + rxAddr, 1500);
-                // Flow control для многофреймовых ответов
-                obd.send("ATFCSH " + txAddr, 1000);
-                obd.send("ATFCSD 30 00 00", 1000);
+            for (String[] m : VAG_MODULES) {
+                String tx = m[0], rx = m[1], name = m[2];
+                boolean readOdo = "1".equals(m[3]);
+                obd.send("ATSH " + tx, 1500);
+                obd.send("ATCRA " + rx, 1500);
+                obd.send("ATFCSH " + tx, 1000);
                 obd.send("ATFCSM 1", 1000);
 
-                boolean inMeters = "METERS:1".equals(module[3]);
-                debugSb.append("[").append(moduleName).append(inMeters ? " (в метрах)" : " (в км)").append("]\n");
+                // Ошибки по протоколу UDS: 19 02 FF = все сохранённые ошибки блока
+                List<Integer> dtc = udsRequest(obd, "1902FF", 4000);
+                if (dtc == null) {
+                    sb.append(name).append(": не отвечает\n");
+                    continue;
+                }
+                answered++;
+                sb.append(name).append(":\n");
+                if (dtc.size() >= 2 && dtc.get(0) == 0x59) {
+                    List<String> faults = parseUdsDtcs(dtc);
+                    if (faults.isEmpty()) {
+                        sb.append("  Ошибок нет\n");
+                    } else {
+                        sb.append("  Ошибки (").append(faults.size()).append("):\n");
+                        for (String f : faults) sb.append("   • ").append(f).append("\n");
+                    }
+                } else if (dtc.size() >= 3 && dtc.get(0) == 0x7F) {
+                    sb.append("  Блок отказал в чтении ошибок (код ")
+                            .append(String.format(Locale.ROOT, "%02X", dtc.get(2))).append(")\n");
+                }
 
-                for (int i = 4; i < module.length; i++) {
-                    String did = module[i];
-                    String raw = obd.send(did, 4000);
-                    String rawTrim = raw == null ? "null" : raw.trim();
-                    debugSb.append("  ").append(did).append(": ").append(rawTrim).append("\n");
-
-                    if (raw != null && !raw.contains("NO DATA") && !raw.contains("ERROR")
-                            && !raw.contains("?") && !raw.trim().isEmpty()) {
-                        String hex = raw.replaceAll("[^0-9A-Fa-f]", "").toUpperCase(Locale.ROOT);
-                        String didHex = did.substring(2).toUpperCase(Locale.ROOT);
-                        int idx = hex.indexOf("62" + didHex);
-                        if (idx >= 0) {
-                            int dataStart = idx + 6;
-                            // Пробуем 4 байта (32 бита) сначала — для метров нужно больше места
-                            long rawVal = -1;
-                            if (hex.length() >= dataStart + 8) {
-                                try {
-                                    rawVal = Long.parseLong(hex.substring(dataStart, dataStart + 8), 16);
-                                } catch (NumberFormatException ignored) {}
-                            }
-                            // Затем 3 байта (24 бита)
-                            if (rawVal < 0 && hex.length() >= dataStart + 6) {
-                                try {
-                                    rawVal = Long.parseLong(hex.substring(dataStart, dataStart + 6), 16);
-                                } catch (NumberFormatException ignored) {}
-                            }
-                            if (rawVal > 0) {
-                                long km = inMeters ? rawVal / 1000 : rawVal;
-                                // Разумный диапазон: от 100 до 2 000 000 км
-                                if (km >= 100 && km < 2000000) {
-                                    sb.append("ОДОМЕТР VAG — реальный пробег\n\n");
-                                    sb.append("  Пробег: ").append(km).append(" км\n");
-                                    if (inMeters) sb.append("  (Хранится в метрах: ").append(rawVal).append(" м)\n");
-                                    sb.append("  Источник: ").append(moduleName).append("\n");
-                                    sb.append("  DID: ").append(did).append("\n\n");
-                                    return sb.toString();
-                                }
-                            }
+                if (readOdo) {
+                    for (String did : VAG_ODO_DIDS) {
+                        List<Integer> r = udsRequest(obd, "22" + did, 3000);
+                        if (r == null || r.size() < 4 || r.get(0) != 0x62) continue;
+                        int hi = Integer.parseInt(did.substring(0, 2), 16);
+                        int lo = Integer.parseInt(did.substring(2, 4), 16);
+                        if (r.get(1) != hi || r.get(2) != lo) continue;
+                        List<Integer> data = r.subList(3, r.size());
+                        long v = 0;
+                        int n = Math.min(4, data.size());
+                        for (int i = 0; i < n; i++) v = (v << 8) | data.get(i);
+                        if (did.equals("F4A6")) v = v / 10; // OBD формула: 0.1 км
+                        sb.append("  Пробег (DID ").append(did).append("): ").append(v).append(" км")
+                                .append("  [байты: ").append(bytesHex(data)).append("]\n");
+                        if (v > 0 && v < 2000000) {
+                            odos.add(new long[]{v});
+                            odoSrc.add(name);
                         }
+                        break;
                     }
                 }
-                debugSb.append("\n");
             }
-
-            // Ничего не нашли — показываем лог для диагностики
-            sb.append(debugSb);
-            sb.append("→ Одометр через OBD не прочитан.\n");
-            sb.append("  Смотрите лог выше для диагностики.\n\n");
         } catch (Exception e) {
-            sb.append("Одометр VAG: ошибка — ").append(e.getMessage()).append("\n");
+            sb.append("Ошибка при опросе блоков VAG: ").append(e.getMessage()).append("\n");
         } finally {
             try {
                 obd.send("ATFCSM 0", 500);
+                obd.send("ATST 32", 500);
                 obd.send("ATAR", 1500);
                 obd.send("ATSH 7DF", 1500);
                 obd.send("ATH0", 1500);
             } catch (IOException ignored) {}
         }
+
+        if (answered == 0) {
+            sb.append("\nНи один блок VAG не ответил — возможно, это не VAG или нужен другой адрес.\n");
+        }
+        if (!odos.isEmpty()) {
+            long min = Long.MAX_VALUE, max = 0;
+            for (long[] o : odos) { min = Math.min(min, o[0]); max = Math.max(max, o[0]); }
+            sb.append("\nПРОБЕГ ПО БЛОКАМ:\n");
+            for (int i = 0; i < odos.size(); i++) {
+                sb.append("  ").append(odoSrc.get(i)).append(": ").append(odos.get(i)[0]).append(" км\n");
+            }
+            if (odos.size() >= 2 && max - min > 100) {
+                sb.append("⚠ Пробег в блоках отличается на ").append(max - min)
+                        .append(" км — возможна скрутка или замена блока.\n");
+            }
+        } else {
+            sb.append("\nПробег из блоков VAG прочитать не удалось.\n");
+        }
+        sb.append("\n");
         return sb.toString();
+    }
+
+    /** Отправляет UDS-запрос и собирает ответ (в т.ч. многострочный). null = нет ответа. */
+    private static List<Integer> udsRequest(ObdConnection obd, String cmd, int timeout) throws IOException {
+        String raw = obd.send(cmd, timeout);
+        if (raw == null) return null;
+        String u = raw.toUpperCase(Locale.ROOT);
+        if (u.contains("NO DATA") || u.contains("ERROR") || u.contains("?") || u.contains("STOPPED")) return null;
+        List<Integer> out = new ArrayList<>();
+        int declared = -1;
+        for (String line : raw.split("[\\r\\n|]+")) {
+            String s = line.replace(" ", "").replace(">", "").toUpperCase(Locale.ROOT);
+            if (s.isEmpty() || s.startsWith("SEARCHING")) continue;
+            boolean cont = s.length() >= 2 && s.charAt(1) == ':';
+            String body = cont ? s.substring(2) : s;
+            if (body.isEmpty() || !body.matches("[0-9A-F]+")) continue;
+            if (!cont && body.length() % 2 == 1 && body.length() <= 3) {
+                declared = Integer.parseInt(body, 16); // длина многострочного ответа
+                continue;
+            }
+            for (int i = 0; i + 1 < body.length(); i += 2) {
+                out.add(Integer.parseInt(body.substring(i, i + 2), 16));
+            }
+        }
+        // Ответ "ещё думаю" (7F xx 78) — пропускаем, берём последний настоящий
+        if (out.size() >= 3 && out.get(0) == 0x7F && out.get(2) == 0x78 && out.size() > 3) {
+            out = new ArrayList<>(out.subList(3, out.size()));
+        }
+        if (declared > 0 && out.size() > declared) out = new ArrayList<>(out.subList(0, declared));
+        return out.isEmpty() ? null : out;
+    }
+
+    /** Разбирает ответ 59 02: [59][02][маска] затем по 4 байта: 3 байта кода + 1 байт статуса. */
+    private static List<String> parseUdsDtcs(List<Integer> r) {
+        List<String> out = new ArrayList<>();
+        for (int i = 3; i + 3 < r.size(); i += 4) {
+            int a = r.get(i), b = r.get(i + 1), c = r.get(i + 2), st = r.get(i + 3);
+            if (a == 0 && b == 0 && c == 0) continue;
+            String code = ObdParser.dtcCode(a, b) + String.format(Locale.ROOT, " %02X", c);
+            String state = (st & 0x01) != 0 ? "активная сейчас" : "сохранена в памяти";
+            out.add(code + " — " + state);
+        }
+        return out;
+    }
+
+    private static String bytesHex(List<Integer> d) {
+        StringBuilder s = new StringBuilder();
+        for (int x : d) s.append(String.format(Locale.ROOT, "%02X", x));
+        return s.toString();
     }
 }
