@@ -467,6 +467,10 @@ public class MainActivity extends Activity {
                 }
                 sb.append("\n");
             }
+            if (EcuScanner.maybeVag(vin)) {
+                sb.append("Это стандартные ошибки двигателя. Ниже — ошибки всех остальных блоков VAG:\n\n");
+                sb.append(EcuScanner.readVagFaults(obd));
+            }
             HistoryStore.Entry cur = new HistoryStore.Entry(System.currentTimeMillis(), vin, mil,
                     found.get(0), found.get(1), found.get(2));
             HistoryStore.Entry prev = HistoryStore.lastFor(HistoryStore.readAll(getFilesDir()), vin);
