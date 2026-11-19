@@ -31,8 +31,8 @@ jobs:
           TG_CHAT: ${{ secrets.TG_CHAT }}
         run: |
           VERSION=$(grep versionName app/build.gradle | grep -o '"[^"]*"' | tr -d '"')
+          MSG="OBD Scanner v${VERSION} готов. Установи APK."
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
             -F chat_id="${TG_CHAT}" \
             -F document=@"app/build/outputs/apk/debug/app-debug.apk" \
-            --form-string caption="✅ OBD Scanner v${VERSION} готов
-Скачай и установи APK 👆"
+            --form-string caption="${MSG}"
