@@ -124,17 +124,20 @@ public final class EcuScanner {
     // Формат: { "TX_header", "RX_filter", "название", DID1, DID2, ... }
     // MQB (Octavia A7, Golf 7, Audi A3 8V): панель на 717→777, шлюз 710→770, ABS 713→773
     // PQ35 (Octavia II, Golf V/VI): панель 7C0→7C8
+    // Формат: { "TX", "RX", "название", "METERS:1_если_в_метрах", DID1, DID2, ... }
+    // METERS:1 = значение в метрах (делить на 1000 для км), METERS:0 = уже в км
     private static final String[][] VAG_MODULES = {
-        // MQB приборная панель (адрес 17 в VCDS = 0x717 ELM)
-        {"717", "777", "Приборная панель MQB (17→77)", "22F442", "22F40A", "22F450", "222801"},
-        // MQB шлюз (адрес 19 = 0x719) — хранит копию пробега
-        {"719", "779", "Шлюз MQB (19→79)", "22F442", "22F40A", "222801"},
-        // MQB ABS (адрес 13 = 0x713) — тоже хранит пробег
-        {"713", "773", "ABS MQB (13→73)", "22F442", "22F40A", "222801"},
-        // PQ35 приборная панель (старый адрес 7C0)
-        {"7C0", "7C8", "Приборная панель PQ35 (7C0→7C8)", "22F442", "22284F", "222801", "22F40A"},
-        // Пробуем движок — иногда хранит пробег
-        {"7E0", "7E8", "Блок двигателя (7E0→7E8)", "22F442", "22284F"},
+        // MQB приборная панель (адрес 17 в VCDS = 0x717 ELM) — значения в км
+        {"717", "777", "Приборная панель MQB (17→77)", "METERS:0", "22F442", "22F40A", "22F450", "222801"},
+        // MQB шлюз (адрес 19 = 0x719) — хранит копию пробега в км
+        {"719", "779", "Шлюз MQB (19→79)", "METERS:0", "22F442", "22F40A", "222801"},
+        // MQB ABS (адрес 13 = 0x713) — тоже хранит пробег в км
+        {"713", "773", "ABS MQB (13→73)", "METERS:0", "22F442", "22F40A", "222801"},
+        // PQ35 приборная панель (старый адрес 7C0) — значения в км
+        {"7C0", "7C8", "Приборная панель PQ35 (7C0→7C8)", "METERS:0", "22F442", "22284F", "222801", "22F40A"},
+        // Движок хранит пробег в МЕТРАХ — делим на 1000
+        // F442=частичный, 2003=полный пробег в метрах (VAG ECU стандарт)
+        {"7E0", "7E8", "Блок двигателя (7E0→7E8)", "METERS:1", "222003", "22F442", "22284F", "22F40A"},
     };
 
     private static String readVagInstrumentCluster(ObdConnection obd) {
@@ -157,9 +160,10 @@ public final class EcuScanner {
                 obd.send("ATFCSD 30 00 00", 1000);
                 obd.send("ATFCSM 1", 1000);
 
-                debugSb.append("[").append(moduleName).append("]\n");
+                boolean inMeters = "METERS:1".equals(module[3]);
+                debugSb.append("[").append(moduleName).append(inMeters ? " (в метрах)" : " (в км)").append("]\n");
 
-                for (int i = 3; i < module.length; i++) {
+                for (int i = 4; i < module.length; i++) {
                     String did = module[i];
                     String raw = obd.send(did, 4000);
                     String rawTrim = raw == null ? "null" : raw.trim();
@@ -172,31 +176,30 @@ public final class EcuScanner {
                         int idx = hex.indexOf("62" + didHex);
                         if (idx >= 0) {
                             int dataStart = idx + 6;
-                            // Пробуем 3 байта (24 бита)
-                            if (hex.length() >= dataStart + 6) {
-                                try {
-                                    long km = Long.parseLong(hex.substring(dataStart, dataStart + 6), 16);
-                                    if (km > 0 && km < 2000000) {
-                                        sb.append("ОДОМЕТР VAG — реальный пробег\n\n");
-                                        sb.append("  Пробег: ").append(km).append(" км\n");
-                                        sb.append("  Источник: ").append(moduleName).append("\n");
-                                        sb.append("  DID: ").append(did).append("\n\n");
-                                        return sb.toString();
-                                    }
-                                } catch (NumberFormatException ignored) {}
-                            }
-                            // Пробуем 4 байта (32 бита)
+                            // Пробуем 4 байта (32 бита) сначала — для метров нужно больше места
+                            long rawVal = -1;
                             if (hex.length() >= dataStart + 8) {
                                 try {
-                                    long km = Long.parseLong(hex.substring(dataStart, dataStart + 8), 16);
-                                    if (km > 0 && km < 2000000) {
-                                        sb.append("ОДОМЕТР VAG — реальный пробег\n\n");
-                                        sb.append("  Пробег: ").append(km).append(" км\n");
-                                        sb.append("  Источник: ").append(moduleName).append("\n");
-                                        sb.append("  DID: ").append(did).append("\n\n");
-                                        return sb.toString();
-                                    }
+                                    rawVal = Long.parseLong(hex.substring(dataStart, dataStart + 8), 16);
                                 } catch (NumberFormatException ignored) {}
+                            }
+                            // Затем 3 байта (24 бита)
+                            if (rawVal < 0 && hex.length() >= dataStart + 6) {
+                                try {
+                                    rawVal = Long.parseLong(hex.substring(dataStart, dataStart + 6), 16);
+                                } catch (NumberFormatException ignored) {}
+                            }
+                            if (rawVal > 0) {
+                                long km = inMeters ? rawVal / 1000 : rawVal;
+                                // Разумный диапазон: от 100 до 2 000 000 км
+                                if (km >= 100 && km < 2000000) {
+                                    sb.append("ОДОМЕТР VAG — реальный пробег\n\n");
+                                    sb.append("  Пробег: ").append(km).append(" км\n");
+                                    if (inMeters) sb.append("  (Хранится в метрах: ").append(rawVal).append(" м)\n");
+                                    sb.append("  Источник: ").append(moduleName).append("\n");
+                                    sb.append("  DID: ").append(did).append("\n\n");
+                                    return sb.toString();
+                                }
                             }
                         }
                     }
