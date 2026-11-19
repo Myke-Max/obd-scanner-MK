@@ -98,67 +98,99 @@ public final class EcuScanner {
      * Работает на MQB (Golf VII, Octavia A7, Audi A3 8V и др., 2013+).
      * DID 0xF442 — одометр в км.
      */
-    // DIDs для одометра VAG (приборная панель 7C0→7C8)
-    // Источник: VCDS label files, VAG-COM community databases
-    private static final String[] VAG_CLUSTER_DIDS = {
-        "22F442",  // MQB стандарт (Golf VII, Octavia A7, Audi A3 8V)
-        "22F40A",  // альтернативный MQB
-        "22F40C",  // некоторые VAG 2015+
-        "22284F",  // PQ35/PQ46 (Octavia II, Golf V/VI)
-        "222801",  // старые VAG CAN
-        "22F450",  // Audi MQB вариант
+    // Адреса модулей VAG для поиска пробега
+    // Формат: { "TX_header", "RX_filter", "название", DID1, DID2, ... }
+    // MQB (Octavia A7, Golf 7, Audi A3 8V): панель на 717→777, шлюз 710→770, ABS 713→773
+    // PQ35 (Octavia II, Golf V/VI): панель 7C0→7C8
+    private static final String[][] VAG_MODULES = {
+        // MQB приборная панель (адрес 17 в VCDS = 0x717 ELM)
+        {"717", "777", "Приборная панель MQB (17→77)", "22F442", "22F40A", "22F450", "222801"},
+        // MQB шлюз (адрес 19 = 0x719) — хранит копию пробега
+        {"719", "779", "Шлюз MQB (19→79)", "22F442", "22F40A", "222801"},
+        // MQB ABS (адрес 13 = 0x713) — тоже хранит пробег
+        {"713", "773", "ABS MQB (13→73)", "22F442", "22F40A", "222801"},
+        // PQ35 приборная панель (старый адрес 7C0)
+        {"7C0", "7C8", "Приборная панель PQ35 (7C0→7C8)", "22F442", "22284F", "222801", "22F40A"},
+        // Пробуем движок — иногда хранит пробег
+        {"7E0", "7E8", "Блок двигателя (7E0→7E8)", "22F442", "22284F"},
     };
 
     private static String readVagInstrumentCluster(ObdConnection obd) {
         StringBuilder sb = new StringBuilder();
-        StringBuilder debugSb = new StringBuilder("ПРИБОРНАЯ ПАНЕЛЬ (VAG 7C0)\n\n");
+        StringBuilder debugSb = new StringBuilder("ПОИСК ОДОМЕТРА VAG\n\n");
         try {
             obd.send("ATH1", 1500);
-            obd.send("ATSH 7C0", 1500);
-            obd.send("ATCRA 7C8", 1500);
+            obd.send("ATAT 1", 1000);
+            obd.send("ATST FF", 1000); // максимальный таймаут
 
-            for (String did : VAG_CLUSTER_DIDS) {
-                String raw = obd.send(did, 3000);
-                debugSb.append("  ").append(did).append(": ")
-                       .append(raw == null ? "null" : raw.trim()).append("\n");
-                if (raw != null && !raw.contains("NO DATA") && !raw.contains("ERROR")
-                        && !raw.trim().isEmpty()) {
-                    String hex = raw.replaceAll("[^0-9A-Fa-f]", "").toUpperCase(Locale.ROOT);
-                    // Ищем ответ UDS 62 + DID (4 hex символа после "62")
-                    String didHex = did.substring(2).toUpperCase(Locale.ROOT);
-                    int idx = hex.indexOf("62" + didHex);
-                    if (idx >= 0) {
-                        int dataStart = idx + 6; // пропускаем "62" + DID (4 символа)
-                        // Пробуем 3 байта (24 бита) = до 16 млн км
-                        if (hex.length() >= dataStart + 6) {
-                            long km = Long.parseLong(hex.substring(dataStart, dataStart + 6), 16);
-                            if (km > 0 && km < 2000000) {
-                                sb.append("ПРИБОРНАЯ ПАНЕЛЬ — реальный пробег одометра\n\n");
-                                sb.append("  Пробег: ").append(km).append(" км\n");
-                                sb.append("  (DID: ").append(did).append(")\n\n");
-                                return sb.toString();
+            for (String[] module : VAG_MODULES) {
+                String txAddr = module[0];
+                String rxAddr = module[1];
+                String moduleName = module[2];
+
+                obd.send("ATSH " + txAddr, 1500);
+                obd.send("ATCRA " + rxAddr, 1500);
+                // Flow control для многофреймовых ответов
+                obd.send("ATFCSH " + txAddr, 1000);
+                obd.send("ATFCSD 30 00 00", 1000);
+                obd.send("ATFCSM 1", 1000);
+
+                debugSb.append("[").append(moduleName).append("]\n");
+
+                for (int i = 3; i < module.length; i++) {
+                    String did = module[i];
+                    String raw = obd.send(did, 4000);
+                    String rawTrim = raw == null ? "null" : raw.trim();
+                    debugSb.append("  ").append(did).append(": ").append(rawTrim).append("\n");
+
+                    if (raw != null && !raw.contains("NO DATA") && !raw.contains("ERROR")
+                            && !raw.contains("?") && !raw.trim().isEmpty()) {
+                        String hex = raw.replaceAll("[^0-9A-Fa-f]", "").toUpperCase(Locale.ROOT);
+                        String didHex = did.substring(2).toUpperCase(Locale.ROOT);
+                        int idx = hex.indexOf("62" + didHex);
+                        if (idx >= 0) {
+                            int dataStart = idx + 6;
+                            // Пробуем 3 байта (24 бита)
+                            if (hex.length() >= dataStart + 6) {
+                                try {
+                                    long km = Long.parseLong(hex.substring(dataStart, dataStart + 6), 16);
+                                    if (km > 0 && km < 2000000) {
+                                        sb.append("ОДОМЕТР VAG — реальный пробег\n\n");
+                                        sb.append("  Пробег: ").append(km).append(" км\n");
+                                        sb.append("  Источник: ").append(moduleName).append("\n");
+                                        sb.append("  DID: ").append(did).append("\n\n");
+                                        return sb.toString();
+                                    }
+                                } catch (NumberFormatException ignored) {}
                             }
-                        }
-                        // Пробуем 4 байта (32 бита)
-                        if (hex.length() >= dataStart + 8) {
-                            long km = Long.parseLong(hex.substring(dataStart, dataStart + 8), 16);
-                            if (km > 0 && km < 2000000) {
-                                sb.append("ПРИБОРНАЯ ПАНЕЛЬ — реальный пробег одометра\n\n");
-                                sb.append("  Пробег: ").append(km).append(" км\n");
-                                sb.append("  (DID: ").append(did).append(")\n\n");
-                                return sb.toString();
+                            // Пробуем 4 байта (32 бита)
+                            if (hex.length() >= dataStart + 8) {
+                                try {
+                                    long km = Long.parseLong(hex.substring(dataStart, dataStart + 8), 16);
+                                    if (km > 0 && km < 2000000) {
+                                        sb.append("ОДОМЕТР VAG — реальный пробег\n\n");
+                                        sb.append("  Пробег: ").append(km).append(" км\n");
+                                        sb.append("  Источник: ").append(moduleName).append("\n");
+                                        sb.append("  DID: ").append(did).append("\n\n");
+                                        return sb.toString();
+                                    }
+                                } catch (NumberFormatException ignored) {}
                             }
                         }
                     }
                 }
+                debugSb.append("\n");
             }
-            // Не нашли — показываем отладочные данные чтобы разобраться
+
+            // Ничего не нашли — показываем лог для диагностики
             sb.append(debugSb);
-            sb.append("  → Пробег не удалось прочитать. Сырые данные выше помогут найти нужный DID.\n\n");
+            sb.append("→ Одометр через OBD не прочитан.\n");
+            sb.append("  Смотрите лог выше для диагностики.\n\n");
         } catch (Exception e) {
-            sb.append("Приборная панель: ошибка — ").append(e.getMessage()).append("\n");
+            sb.append("Одометр VAG: ошибка — ").append(e.getMessage()).append("\n");
         } finally {
             try {
+                obd.send("ATFCSM 0", 500);
                 obd.send("ATAR", 1500);
                 obd.send("ATSH 7DF", 1500);
                 obd.send("ATH0", 1500);
