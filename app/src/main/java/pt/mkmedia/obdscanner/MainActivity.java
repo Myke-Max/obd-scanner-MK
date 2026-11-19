@@ -7,11 +7,15 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -64,74 +68,215 @@ public class MainActivity extends Activity {
         show(start);
     }
 
+    // ---------- цвета ----------
+    // Палитра: тёмный фон #121212, карточки #1E1E2E, акценты по группам
+    private static final int BG          = 0xFF121218;
+    private static final int CARD_BG     = 0xFF1E1E2E;
+    private static final int TEXT_PRI    = 0xFFECEFF4;
+    private static final int TEXT_SEC    = 0xFF8A8FA8;
+    private static final int ACCENT_BLUE = 0xFF4A9EFF;  // подключение
+    private static final int ACCENT_RED  = 0xFFFF5B5B;  // ошибки
+    private static final int ACCENT_GRN  = 0xFF44D9A0;  // живые данные / VIN
+    private static final int ACCENT_PUR  = 0xFFAA82FF;  // блоки / история
+    private static final int ACCENT_ORG  = 0xFFFF9C3E;  // заметки / TG
+    private static final int ACCENT_GREY = 0xFF6B7280;  // отправить
+
     // ---------- интерфейс ----------
 
     private int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density);
     }
 
-    private Button makeButton(String text, View.OnClickListener l) {
+    private GradientDrawable roundRect(int fillColor, int radius) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dp(radius));
+        d.setColor(fillColor);
+        return d;
+    }
+
+    private GradientDrawable roundRectStroke(int fillColor, int strokeColor, int radius) {
+        GradientDrawable d = roundRect(fillColor, radius);
+        d.setStroke(dp(1), strokeColor);
+        return d;
+    }
+
+    /** Создаёт кнопку в стиле приложения */
+    private Button makeButton(String text, int accentColor, View.OnClickListener l) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
+        b.setTextColor(TEXT_PRI);
+        b.setTextSize(13.5f);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setPadding(dp(8), dp(10), dp(8), dp(10));
+        b.setBackground(roundRectStroke(CARD_BG, accentColor, 14));
         b.setOnClickListener(l);
+        // Эффект нажатия — немного светлее
+        b.setStateListAnimator(null);
+        b.setElevation(dp(2));
         return b;
     }
 
-    private LinearLayout row(Button a, Button b) {
+    /** Кнопка без обводки, заливка акцентом (для главной кнопки подключения) */
+    private Button makePrimaryButton(String text, int bgColor, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextColor(0xFF000000);
+        b.setTextSize(15f);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setPadding(dp(8), dp(14), dp(8), dp(14));
+        b.setBackground(roundRect(bgColor, 16));
+        b.setOnClickListener(l);
+        b.setStateListAnimator(null);
+        b.setElevation(dp(4));
+        return b;
+    }
+
+    /** Два равных столбца в строке с зазором */
+    private LinearLayout row(View a, View b) {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        r.addView(a, p);
-        r.addView(b, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        int gap = dp(8);
+        LinearLayout.LayoutParams pa = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        pa.rightMargin = gap / 2;
+        LinearLayout.LayoutParams pb = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        pb.leftMargin = gap / 2;
+        r.addView(a, pa);
+        r.addView(b, pb);
         return r;
     }
 
+    /** Добавляет вертикальный отступ */
+    private View spacer(int heightDp) {
+        View v = new View(this);
+        v.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(heightDp)));
+        return v;
+    }
+
+    /** Маленький заголовок секции */
+    private TextView sectionLabel(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(TEXT_SEC);
+        tv.setTextSize(11f);
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setLetterSpacing(0.08f);
+        tv.setPadding(dp(2), 0, 0, dp(4));
+        return tv;
+    }
+
     private void buildUi() {
+        // Корневой скролл с тёмным фоном
+        ScrollView rootScroll = new ScrollView(this);
+        rootScroll.setBackgroundColor(BG);
+        rootScroll.setFillViewport(true);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(12), dp(28), dp(12), dp(12));
+        root.setBackgroundColor(BG);
+        root.setPadding(dp(16), dp(32), dp(16), dp(16));
 
+        // ── Шапка ──────────────────────────────────────────
+        TextView appTitle = new TextView(this);
+        appTitle.setText("OBD Scanner");
+        appTitle.setTextColor(TEXT_PRI);
+        appTitle.setTextSize(22f);
+        appTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        appTitle.setGravity(Gravity.CENTER_HORIZONTAL);
+        root.addView(appTitle);
+
+        root.addView(spacer(4));
+
+        TextView appSub = new TextView(this);
+        appSub.setText("MK Media · Диагностика автомобиля");
+        appSub.setTextColor(TEXT_SEC);
+        appSub.setTextSize(12f);
+        appSub.setGravity(Gravity.CENTER_HORIZONTAL);
+        root.addView(appSub);
+
+        root.addView(spacer(16));
+
+        // ── Карточка статуса ───────────────────────────────
+        FrameLayout statusCard = new FrameLayout(this);
+        statusCard.setBackground(roundRectStroke(CARD_BG, ACCENT_BLUE, 16));
+        statusCard.setPadding(dp(16), dp(14), dp(16), dp(14));
         status = new TextView(this);
-        status.setTextSize(16);
+        status.setTextSize(14f);
         status.setTypeface(Typeface.DEFAULT_BOLD);
-        status.setPadding(0, 0, 0, dp(8));
-        root.addView(status);
+        status.setTextColor(ACCENT_BLUE);
+        statusCard.addView(status);
+        root.addView(statusCard);
 
-        btnConnect = makeButton("Подключиться к адаптеру", v -> onConnectClicked());
+        root.addView(spacer(16));
+
+        // ── Секция: Подключение ────────────────────────────
+        btnConnect = makePrimaryButton("⚡  Подключиться к адаптеру", ACCENT_BLUE, v -> onConnectClicked());
         root.addView(btnConnect);
 
-        btnDtc = makeButton("Прочитать ошибки", v -> readDtc());
-        btnClear = makeButton("Стереть ошибки", v -> confirmClear());
+        root.addView(spacer(16));
+
+        // ── Секция: Ошибки ─────────────────────────────────
+        root.addView(sectionLabel("ОШИБКИ"));
+        btnDtc   = makeButton("🔍  Прочитать ошибки",  ACCENT_RED,  v -> readDtc());
+        btnClear = makeButton("🗑  Стереть ошибки",    ACCENT_RED,  v -> confirmClear());
         root.addView(row(btnDtc, btnClear));
 
-        btnLive = makeButton("Живые данные", v -> toggleLive());
-        btnVin = makeButton("Номер VIN", v -> readVin());
+        root.addView(spacer(10));
+
+        // ── Секция: Данные ─────────────────────────────────
+        root.addView(sectionLabel("ДАННЫЕ"));
+        btnLive = makeButton("📊  Живые данные",   ACCENT_GRN, v -> toggleLive());
+        btnVin  = makeButton("🔖  Номер VIN",       ACCENT_GRN, v -> readVin());
         root.addView(row(btnLive, btnVin));
 
-        btnScan = makeButton("Сканировать блоки и пробег", v -> scanEcus());
-        btnHistory = makeButton("История проверок", v -> showHistory());
+        root.addView(spacer(10));
+
+        // ── Секция: Диагностика ────────────────────────────
+        root.addView(sectionLabel("ДИАГНОСТИКА"));
+        btnScan    = makeButton("🛞  Блоки и пробег",    ACCENT_PUR, v -> scanEcus());
+        btnHistory = makeButton("📋  История проверок",  ACCENT_PUR, v -> showHistory());
         root.addView(row(btnScan, btnHistory));
 
-        btnNote = makeButton("Заметка к машине", v -> editNote());
-        btnTg = makeButton("Telegram", v -> telegramDialog());
+        root.addView(spacer(10));
+
+        // ── Секция: Заметки и связь ────────────────────────
+        root.addView(sectionLabel("ЗАМЕТКИ И СВЯЗЬ"));
+        btnNote = makeButton("✏️  Заметка к машине", ACCENT_ORG, v -> editNote());
+        btnTg   = makeButton("✈️  Telegram",          ACCENT_ORG, v -> telegramDialog());
         root.addView(row(btnNote, btnTg));
 
-        btnShare = makeButton("Отправить отчёт", v -> shareReport());
-        btnLog = makeButton("Отправить журнал", v -> shareLog());
+        root.addView(spacer(10));
+
+        // ── Секция: Экспорт ────────────────────────────────
+        root.addView(sectionLabel("ЭКСПОРТ"));
+        btnShare = makeButton("📤  Отправить отчёт",  ACCENT_GREY, v -> shareReport());
+        btnLog   = makeButton("📁  Отправить журнал", ACCENT_GREY, v -> shareLog());
         root.addView(row(btnShare, btnLog));
 
-        ScrollView scroll = new ScrollView(this);
+        root.addView(spacer(16));
+
+        // ── Текст вывода ───────────────────────────────────
+        FrameLayout outputCard = new FrameLayout(this);
+        outputCard.setBackground(roundRect(CARD_BG, 14));
+        outputCard.setPadding(dp(14), dp(12), dp(14), dp(12));
         output = new TextView(this);
         output.setTypeface(Typeface.MONOSPACE);
-        output.setTextSize(13);
+        output.setTextSize(13f);
+        output.setTextColor(TEXT_PRI);
         output.setTextIsSelectable(true);
-        output.setPadding(0, dp(8), 0, 0);
-        scroll.addView(output);
-        root.addView(scroll, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        output.setLineSpacing(dp(2), 1f);
+        outputCard.addView(output);
 
-        setContentView(root);
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        root.addView(outputCard, cardParams);
+
+        rootScroll.addView(root);
+        setContentView(rootScroll);
     }
 
     private void setConnectedUi(boolean connected) {
@@ -140,7 +285,10 @@ public class MainActivity extends Activity {
         btnLive.setEnabled(connected);
         btnVin.setEnabled(connected);
         btnScan.setEnabled(connected);
-        status.setText(connected ? "Подключено: " + deviceName : "Не подключено");
+        status.setText(connected
+                ? "✅  Подключено: " + deviceName
+                : "🔴  Не подключено");
+        status.setTextColor(connected ? ACCENT_GRN : ACCENT_RED);
     }
 
     private void show(String text) {
