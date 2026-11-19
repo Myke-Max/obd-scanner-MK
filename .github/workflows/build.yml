@@ -19,7 +19,7 @@ jobs:
           gradle-version: '8.7'
       - name: Restore signing key
         env:
-          SIGNING_KEY_B64: ${{ secrets.SIGNING_KEY_B64 }}
+          SIGNING_KEY_B64: ${{ secrets.SIGNING_KEY_B64 || secrets.KEYSTORE_B64 }}
         run: |
           # Ключ необязателен: если секрета нет или он битый — сборка всё равно пройдёт с временным ключом
           if [ -n "$SIGNING_KEY_B64" ]; then
