@@ -89,8 +89,56 @@ public final class EcuScanner {
                 sb.append("Общий пробег в блоках совпадает.\n\n");
             }
         }
-        sb.append("Важно: приборная панель, где обычно хранится настоящий пробег, по стандарту OBD чаще всего недоступна. ")
-                .append("Её чтение зависит от марки машины.\n");
+        sb.append(readVagInstrumentCluster(obd));
+        return sb.toString();
+    }
+
+    /**
+     * Читает пробег из приборной панели VAG по UDS (адрес 7C0).
+     * Работает на MQB (Golf VII, Octavia A7, Audi A3 8V и др., 2013+).
+     * DID 0xF442 — одометр в км.
+     */
+    private static String readVagInstrumentCluster(ObdConnection obd) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            // Переключаемся на прямой диалог с приборной панелью
+            obd.send("ATH1", 1500);
+            obd.send("ATSH 7C0", 1500);
+            obd.send("ATCRA 7C8", 1500);
+
+            // UDS ReadDataByIdentifier (22) DID F4 42
+            String raw = obd.send("22F442", 4000);
+            if (raw == null || raw.trim().isEmpty() || raw.contains("NO DATA") || raw.contains("ERROR")) {
+                // Пробуем альтернативный DID 0xF40A (тоже используется в VAG)
+                raw = obd.send("22F40A", 4000);
+            }
+
+            if (raw != null && !raw.trim().isEmpty() && !raw.contains("NO DATA") && !raw.contains("ERROR")) {
+                // Ответ UDS: 62 F4 42 XX XX XX (3 байта = км, big-endian)
+                String hex = raw.replaceAll("[^0-9A-Fa-f]", "");
+                // Ищем заголовок ответа 62F4
+                int idx = hex.toUpperCase(Locale.ROOT).indexOf("62F4");
+                if (idx >= 0 && hex.length() >= idx + 10) {
+                    String payload = hex.substring(idx + 6, idx + 12); // 3 байта после 62 F4 42/0A
+                    long km = Long.parseLong(payload, 16);
+                    if (km > 0 && km < 2000000) {
+                        sb.append("ПРИБОРНАЯ ПАНЕЛЬ (реальный пробег)\n\n");
+                        sb.append("  Пробег одометра: ").append(km).append(" км\n\n");
+                        return sb.toString();
+                    }
+                }
+            }
+            sb.append("Приборная панель: не ответила на запрос пробега.\n")
+              .append("(Это нормально для некоторых авто — стандарт OBD не обязывает панель отвечать.)\n");
+        } catch (Exception e) {
+            sb.append("Приборная панель: ошибка при чтении — ").append(e.getMessage()).append("\n");
+        } finally {
+            try {
+                obd.send("ATAR", 1500);
+                obd.send("ATSH 7DF", 1500);
+                obd.send("ATH0", 1500);
+            } catch (IOException ignored) {}
+        }
         return sb.toString();
     }
 }
