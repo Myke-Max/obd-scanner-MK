@@ -55,11 +55,10 @@ public final class EcuScanner {
                 for (int mode : new int[]{0x03, 0x07, 0x0A}) {
                     String dtcRaw = obd.send(String.format(Locale.ROOT, "%02X", mode), 4000);
                     if (dtcRaw != null && !ObdParser.isError(dtcRaw)) {
-                        for (List<Integer> resp : ObdParser.responses(dtcRaw)) {
-                            // ответ на режим 03 начинается с байта 43 (0x40+3)
+                        for (List<Integer> dtcResp : ObdParser.responses(dtcRaw)) {
                             int expectByte = 0x40 + mode;
-                            if (!resp.isEmpty() && resp.get(0) == expectByte) {
-                                List<Integer> data = resp.subList(1, resp.size());
+                            if (!dtcResp.isEmpty() && dtcResp.get(0) == expectByte) {
+                                List<Integer> data = dtcResp.subList(1, dtcResp.size());
                                 allDtcs.addAll(ObdParser.parseDtcs(data, obd.can));
                             }
                         }
