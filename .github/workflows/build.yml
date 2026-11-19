@@ -20,7 +20,10 @@ jobs:
       - name: Setup keystore
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
-        run: printf '%s' "$KEYSTORE_B64" | base64 --decode > app/obd-release.jks
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > app/obd-release.jks || true
+          fi
       - name: Build
         run: gradle assembleDebug --no-daemon
       - name: Save APK
