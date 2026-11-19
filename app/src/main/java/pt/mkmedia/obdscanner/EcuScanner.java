@@ -134,6 +134,9 @@ public final class EcuScanner {
     // DID 2203 — пробег в приборке VAG (OVMS: VWUP_MFD_ODOMETER). Проверено на Octavia A7 2014.
     private static final String ODO_DID = "2203";
 
+    /** Последний пробег, прочитанный с приборки (без поправки). -1 = не читали. */
+    public static volatile long lastClusterKm = -1;
+
     // Первые 3 знака VIN машин группы VAG
     private static final String[] VAG_WMI = {"TMB", "TMP", "VSS", "VS6", "WVW", "WV1", "WV2", "WV3",
             "WAU", "WA1", "WUA", "TRU", "3VW", "9BW", "8AW", "LFV", "LSV"};
@@ -155,6 +158,7 @@ public final class EcuScanner {
         StringBuilder sb = new StringBuilder("ОШИБКИ И ПРОБЕГ ПО БЛОКАМ VAG\n");
         sb.append("(номер ошибки — как в VCDS)\n\n");
         long clusterKm = -1;
+        lastClusterKm = -1;
         String clusterSrc = "";
         List<Long> faultKm = new ArrayList<>();
         List<String> faultKmWhere = new ArrayList<>();
@@ -215,6 +219,7 @@ public final class EcuScanner {
                     if (km > 0) {
                         sb.append("  Пробег в блоке: ").append(km).append(" км\n");
                         if (clusterKm < 0) { clusterKm = km; clusterSrc = name; }
+                        lastClusterKm = clusterKm;
                     }
                 }
                 sb.append("\n");

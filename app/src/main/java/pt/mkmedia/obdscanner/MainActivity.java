@@ -14,7 +14,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
+import android.text.InputType;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -39,7 +41,7 @@ public class MainActivity extends Activity {
 
     private TextView status;
     private TextView output;
-    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare, btnHistory, btnLog, btnScan, btnNote, btnTg;
+    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare, btnHistory, btnLog, btnScan, btnNote, btnTg, btnKm;
 
     private ObdConnection obd;
     private String deviceName = "";
@@ -247,6 +249,8 @@ public class MainActivity extends Activity {
         btnNote = makeButton("✏️  Заметка к машине", ACCENT_ORG, v -> editNote());
         btnTg   = makeButton("✈️  Telegram",          ACCENT_ORG, v -> telegramDialog());
         root.addView(row(btnNote, btnTg));
+        btnKm = makeButton("🔧  Поправить пробег", ACCENT_ORG, v -> editKm());
+        root.addView(row(btnKm, new View(this)));
 
         root.addView(spacer(10));
 
@@ -470,6 +474,7 @@ public class MainActivity extends Activity {
             if (EcuScanner.maybeVag(vin)) {
                 sb.append("Это стандартные ошибки двигателя. Ниже — ошибки всех остальных блоков VAG:\n\n");
                 sb.append(EcuScanner.readVagFaults(obd));
+                sb.append(kmCorrectionText());
             }
             HistoryStore.Entry cur = new HistoryStore.Entry(System.currentTimeMillis(), vin, mil,
                     found.get(0), found.get(1), found.get(2));
@@ -614,6 +619,7 @@ public class MainActivity extends Activity {
         runTask(() -> {
             String r = EcuScanner.scan(obd);
             lastScanText = r;
+            r = kmCorrectionText() + r;
             AppLog.log("Скан блоков завершён");
             show(r);
         });
@@ -638,7 +644,7 @@ public class MainActivity extends Activity {
             sb.append("\n");
         }
         if (!lastLiveText.isEmpty()) sb.append(lastLiveText).append("\n");
-        if (!lastScanText.isEmpty()) sb.append(lastScanText);
+        if (!lastScanText.isEmpty()) sb.append(kmCorrectionText()).append(lastScanText);
         return sb.toString();
     }
 
@@ -690,6 +696,58 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Отмена", null)
                 .show();
     }
+
+    // ---------- поправка пробега ----------
+
+    /** Строка о поправке пробега для отчёта (пусто, если поправки нет). */
+    private String kmCorrectionText() {
+        if (lastVin.isEmpty() || EcuScanner.lastClusterKm <= 0) return "";
+        long off = ExtraStore.kmOffset(this, lastVin);
+        if (off == 0) return "";
+        return "ПРОБЕГ С ПОПРАВКОЙ (введён вручную): " + (EcuScanner.lastClusterKm + off)
+                + " км (приборка показывает " + EcuScanner.lastClusterKm + " км)\n\n";
+    }
+
+    private void editKm() {
+        if (lastVin.isEmpty()) {
+            show("Сначала нажмите «Прочитать ошибки» — там считывается VIN машины.");
+            return;
+        }
+        final long raw = EcuScanner.lastClusterKm;
+        if (raw <= 0) {
+            show("Сначала нажмите «Блоки и пробег» — приложению нужно прочитать пробег с приборки.");
+            return;
+        }
+        long off = ExtraStore.kmOffset(this, lastVin);
+        final EditText et = new EditText(this);
+        et.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        et.setText(String.valueOf(raw + off));
+        et.setHint("Настоящий пробег, км");
+        new AlertDialog.Builder(this)
+                .setTitle("Поправить пробег")
+                .setMessage("Приборка показывает: " + raw + " км.\n"
+                        + "Введи настоящий пробег. Поправка запомнится для этой машины и попадёт в отчёт. "
+                        + "Можно ввести как больше, так и меньше.")
+                .setView(et)
+                .setPositiveButton("Сохранить", (d, w) -> {
+                    try {
+                        long real = Long.parseLong(et.getText().toString().trim());
+                        ExtraStore.setKmOffset(this, lastVin, real - raw);
+                        toast("Пробег сохранён: " + real + " км");
+                        show(lastScanText.isEmpty() ? "" : kmCorrectionText() + lastScanText);
+                    } catch (NumberFormatException e) {
+                        toast("Введи число, например 259516");
+                    }
+                })
+                .setNeutralButton("Сбросить", (d, w) -> {
+                    ExtraStore.setKmOffset(this, lastVin, 0L);
+                    toast("Поправка сброшена");
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    // ---------- заметки ----------
 
     private void editNote() {
         if (lastVin.isEmpty()) {

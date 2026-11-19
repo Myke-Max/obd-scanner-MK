@@ -30,6 +30,20 @@ public final class ExtraStore {
                 .putBoolean("tg_auto", auto).apply();
     }
 
+    private static String kmKey(String vin) {
+        return "km_off_" + vin.replaceAll("[^A-Za-z0-9]", "");
+    }
+
+    /** Поправка пробега (может быть отрицательной), км. 0 = поправки нет. */
+    public static long kmOffset(Context c, String vin) {
+        if (vin == null || vin.isEmpty()) return 0L;
+        return prefs(c).getLong(kmKey(vin), 0L);
+    }
+
+    public static void setKmOffset(Context c, String vin, long offset) {
+        prefs(c).edit().putLong(kmKey(vin), offset).apply();
+    }
+
     private static File noteFile(Context c, String vin) {
         File dir = new File(c.getFilesDir(), "notes");
         //noinspection ResultOfMethodCallIgnored
