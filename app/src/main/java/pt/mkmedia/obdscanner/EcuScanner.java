@@ -50,6 +50,29 @@ public final class EcuScanner {
                 if (!cal.isEmpty()) sb.append("  Номер калибровки (версия прошивки): ").append(cal).append("\n");
                 if (!vin.isEmpty()) sb.append("  VIN в блоке: ").append(vin).append("\n");
 
+                // Читаем ошибки: режим 03 = активные, 07 = ожидающие, 0A = постоянные
+                List<String> allDtcs = new ArrayList<>();
+                for (int mode : new int[]{0x03, 0x07, 0x0A}) {
+                    String dtcRaw = obd.send(String.format(Locale.ROOT, "%02X", mode), 4000);
+                    if (dtcRaw != null && !ObdParser.isError(dtcRaw)) {
+                        for (List<Integer> resp : ObdParser.responses(dtcRaw)) {
+                            // ответ на режим 03 начинается с байта 43 (0x40+3)
+                            int expectByte = 0x40 + mode;
+                            if (!resp.isEmpty() && resp.get(0) == expectByte) {
+                                List<Integer> data = resp.subList(1, resp.size());
+                                allDtcs.addAll(ObdParser.parseDtcs(data, obd.can));
+                            }
+                        }
+                    }
+                }
+                if (allDtcs.isEmpty()) {
+                    sb.append("  Ошибок нет\n");
+                } else {
+                    sb.append("  Ошибки (").append(allDtcs.size()).append("): ");
+                    sb.append(String.join(", ", allDtcs)).append("\n");
+                }
+
+                // Пробег по стандартным OBD PID
                 boolean any = false;
                 for (int pid : ObdParser.MILEAGE_PIDS) {
                     String r = obd.send(String.format(Locale.ROOT, "01%02X", pid), 2500);
