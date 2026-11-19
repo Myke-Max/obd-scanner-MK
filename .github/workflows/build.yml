@@ -17,6 +17,24 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
+      - name: Restore signing key
+        env:
+          SIGNING_KEY_B64: ${{ secrets.SIGNING_KEY_B64 }}
+        run: |
+          # Ключ необязателен: если секрета нет или он битый — сборка всё равно пройдёт с временным ключом
+          if [ -n "$SIGNING_KEY_B64" ]; then
+            printf '%s' "$SIGNING_KEY_B64" | tr -d ' \r\n\t' | base64 -d > app/release.jks 2>/dev/null || true
+            if keytool -list -keystore app/release.jks -storepass obdscanner2024 >/dev/null 2>&1; then
+              echo "SIGNING=permanent" >> "$GITHUB_ENV"
+              keytool -list -keystore app/release.jks -storepass obdscanner2024 | grep -i fingerprint
+            else
+              echo "Signing key secret is not a valid keystore, using debug key"
+              rm -f app/release.jks
+              echo "SIGNING=broken" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "SIGNING=temporary" >> "$GITHUB_ENV"
+          fi
       - name: Build
         run: gradle assembleDebug --no-daemon
       - name: Save APK
@@ -29,8 +47,13 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT: ${{ secrets.TG_CHAT }}
         run: |
-          VERSION=$(grep 'versionName' app/build.gradle | head -1 | sed 's/.*versionName[[:space:]]*"\([^"]*\)".*/\1/')
-          MSG="OBD Scanner v${VERSION} готов. Установи APK."
+          VERSION=$(grep -m1 'versionName' app/build.gradle | sed -E "s/.*versionName[[:space:]]*['\"]([^'\"]*)['\"].*/\1/")
+          case "$SIGNING" in
+            permanent) SIGN="Подпись постоянная — ставится поверх старой версии." ;;
+            broken)    SIGN="Ключ подписи в GitHub битый — обновление поверх не встанет." ;;
+            *)         SIGN="Подпись временная — перед установкой удали старую версию." ;;
+          esac
+          MSG="OBD Scanner v${VERSION} готов. ${SIGN}"
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
             -F chat_id="${TG_CHAT}" \
             -F document=@"app/build/outputs/apk/debug/app-debug.apk" \

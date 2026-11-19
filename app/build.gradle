@@ -19,9 +19,22 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    // Постоянный ключ подписи: файл release.jks кладёт сборка GitHub из секрета SIGNING_KEY_B64.
+    // Если файла нет — подписывается временным debug-ключом (обновление поверх не встанет).
+    signingConfigs {
+        mk {
+            storeFile file('release.jks')
+            storePassword 'obdscanner2024'
+            keyAlias 'obd'
+            keyPassword 'obdscanner2024'
+        }
+    }
+
     buildTypes {
         debug {
-            // подписывается дефолтным debug ключом Android
+            if (file('release.jks').exists()) {
+                signingConfig signingConfigs.mk
+            }
         }
         release {
             minifyEnabled false
