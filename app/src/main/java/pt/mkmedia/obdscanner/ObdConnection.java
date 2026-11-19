@@ -20,13 +20,17 @@ public class ObdConnection {
 
     public boolean can = true;
     public boolean carResponding = false;
+    /** Писать ли каждый запрос и ответ в журнал (в живых данных отключаем, чтобы не засорять). */
+    public volatile boolean logTraffic = true;
 
     /** Подключается и настраивает адаптер. */
     public void connect(BluetoothDevice device) throws IOException {
+        AppLog.log("Подключение к " + device.getName() + " " + device.getAddress());
         BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
         if (adapter != null) adapter.cancelDiscovery();
         socket = device.createRfcommSocketToServiceRecord(SPP);
         socket.connect();
+        AppLog.log("Bluetooth-соединение установлено");
         in = socket.getInputStream();
         out = socket.getOutputStream();
 
@@ -44,10 +48,12 @@ public class ObdConnection {
         if (carResponding) {
             can = ObdParser.isCanProtocol(send("ATDPN", 1500));
         }
+        AppLog.log("Машина отвечает: " + carResponding + ", CAN: " + can);
     }
 
     public synchronized String send(String cmd, int timeoutMs) throws IOException {
         while (in.available() > 0) in.read();
+        if (logTraffic) AppLog.log("→ " + cmd);
         out.write((cmd + "\r").getBytes("US-ASCII"));
         out.flush();
         StringBuilder sb = new StringBuilder();
@@ -67,10 +73,15 @@ public class ObdConnection {
                 }
             }
         }
+        if (logTraffic) {
+            String resp = sb.toString().trim().replace("\r", " | ").replace("\n", " | ");
+            AppLog.log("← " + (resp.isEmpty() ? "(нет ответа)" : resp));
+        }
         return sb.toString();
     }
 
     public void close() {
+        AppLog.log("Соединение закрыто");
         try {
             if (socket != null) socket.close();
         } catch (IOException ignored) {

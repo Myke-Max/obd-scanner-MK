@@ -35,7 +35,7 @@ public class MainActivity extends Activity {
 
     private TextView status;
     private TextView output;
-    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare;
+    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare, btnHistory, btnLog;
 
     private ObdConnection obd;
     private String deviceName = "";
@@ -49,12 +49,19 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        AppLog.init(getFilesDir());
+        AppLog.installCrashHandler();
+        AppLog.log("=== Запуск приложения. Android " + Build.VERSION.RELEASE + ", " + Build.MODEL + " ===");
         buildUi();
         setConnectedUi(false);
-        show("Как начать:\n"
+        String start = "Как начать:\n"
                 + "1. Вставьте адаптер OBDLink LX в разъём машины и включите зажигание.\n"
                 + "2. В настройках Bluetooth телефона один раз свяжите адаптер (PIN: 1234 или 0000).\n"
-                + "3. Нажмите «Подключиться к адаптеру».");
+                + "3. Нажмите «Подключиться к адаптеру».";
+        if (AppLog.consumeCrashFlag()) {
+            start = "⚠ В прошлый раз приложение закрылось с ошибкой. Причина записана — нажмите «Отправить журнал» и пришлите мне.\n\n" + start;
+        }
+        show(start);
     }
 
     // ---------- интерфейс ----------
@@ -103,7 +110,11 @@ public class MainActivity extends Activity {
         root.addView(row(btnLive, btnVin));
 
         btnShare = makeButton("Отправить отчёт", v -> shareReport());
-        root.addView(btnShare);
+        btnHistory = makeButton("История проверок", v -> showHistory());
+        root.addView(row(btnShare, btnHistory));
+
+        btnLog = makeButton("Отправить журнал (для поддержки)", v -> shareLog());
+        root.addView(btnLog);
 
         ScrollView scroll = new ScrollView(this);
         output = new TextView(this);
@@ -189,6 +200,9 @@ public class MainActivity extends Activity {
 
     private void connect(BluetoothDevice dev) {
         liveRunning = false;
+        lastVin = "";
+        lastDtcText = "";
+        lastLiveText = "";
         deviceName = dev.getName() != null ? dev.getName() : dev.getAddress();
         setStatus("Подключаюсь к " + deviceName + "…");
         show("Подключаюсь. Это может занять до 15 секунд…");
@@ -208,6 +222,7 @@ public class MainActivity extends Activity {
                             + "Включите зажигание (можно не заводить), проверьте, что адаптер плотно вставлен, и подключитесь снова.");
                 }
             } catch (Exception e) {
+                AppLog.logError("подключение", e);
                 runOnUiThread(() -> setConnectedUi(false));
                 show("Не удалось подключиться: " + e.getMessage()
                         + "\n\nПроверьте: адаптер вставлен, зажигание включено, адаптер связан с телефоном в настройках Bluetooth.");
@@ -225,10 +240,12 @@ public class MainActivity extends Activity {
             try {
                 task.run();
             } catch (IOException e) {
+                AppLog.logError("связь", e);
                 runOnUiThread(() -> setConnectedUi(false));
                 show("Связь потеряна: " + e.getMessage() + "\nПодключитесь заново.");
             } catch (Exception e) {
-                show("Ошибка: " + e);
+                AppLog.logError("задача", e);
+                show("Ошибка: " + e + "\n\nПричина записана в журнал — нажмите «Отправить журнал».");
             }
         });
     }
@@ -239,13 +256,21 @@ public class MainActivity extends Activity {
         show("Читаю ошибки…");
         runTask(() -> {
             StringBuilder sb = new StringBuilder();
+            if (lastVin.isEmpty()) {
+                lastVin = ObdParser.parseVin(obd.send("0902", 6000));
+            }
+            String vin = lastVin;
+            if (!vin.isEmpty()) sb.append("VIN: ").append(vin).append("\n");
+            boolean mil = false;
             String r = obd.send("0101", 4000);
             List<Integer> st = ObdParser.findData(r, 1, 0x01);
             if (st != null && !st.isEmpty()) {
-                boolean mil = (st.get(0) & 0x80) != 0;
+                mil = (st.get(0) & 0x80) != 0;
                 sb.append("Лампа Check Engine: ").append(mil ? "ГОРИТ" : "не горит").append("\n");
-                sb.append("Ошибок по данным блока: ").append(st.get(0) & 0x7F).append("\n\n");
+                sb.append("Ошибок по данным блока: ").append(st.get(0) & 0x7F).append("\n");
             }
+            sb.append("\n");
+            List<List<String>> found = new ArrayList<>();
             String[][] sections = {
                     {"03", "СОХРАНЁННЫЕ ОШИБКИ"},
                     {"07", "ОЖИДАЮЩИЕ (появлялись, но ещё не подтверждены)"},
@@ -258,6 +283,8 @@ public class MainActivity extends Activity {
                 for (List<Integer> data : ObdParser.findAllData(raw, mode, -1)) {
                     codes.addAll(ObdParser.parseDtcs(data, obd.can));
                 }
+                found.add(new ArrayList<>(codes));
+                AppLog.log("Ошибки режим " + s[0] + ": " + codes);
                 sb.append(s[1]).append(":\n");
                 if (codes.isEmpty()) {
                     sb.append("  — нет —\n");
@@ -268,6 +295,18 @@ public class MainActivity extends Activity {
                 }
                 sb.append("\n");
             }
+            HistoryStore.Entry cur = new HistoryStore.Entry(System.currentTimeMillis(), vin, mil,
+                    found.get(0), found.get(1), found.get(2));
+            HistoryStore.Entry prev = HistoryStore.lastFor(HistoryStore.readAll(getFilesDir()), vin);
+            if (prev != null) {
+                sb.append(HistoryStore.diffText(prev, cur));
+            } else {
+                sb.append("Это первая проверка этой машины в приложении.\n\n");
+            }
+            if (vin.isEmpty()) {
+                sb.append("VIN не определён — сравнение и история могут относиться к другой машине.\n");
+            }
+            HistoryStore.append(getFilesDir(), cur);
             lastDtcText = sb.toString();
             show(lastDtcText);
         });
@@ -287,6 +326,7 @@ public class MainActivity extends Activity {
     private void clearDtc() {
         show("Стираю ошибки…");
         runTask(() -> {
+            AppLog.log("Пользователь стирает ошибки");
             String raw = obd.send("04", 6000);
             if (ObdParser.findData(raw, 4, -1) != null) {
                 show("Ошибки стёрты. Если проблема осталась, лампа и ошибки вернутся.");
@@ -327,6 +367,7 @@ public class MainActivity extends Activity {
             try {
                 while (liveRunning && obd != null) {
                     StringBuilder sb = new StringBuilder("ЖИВЫЕ ДАННЫЕ (обновляются)\n\n");
+                    obd.logTraffic = first;
                     for (int pid : ObdParser.LIVE_PIDS) {
                         if (!liveRunning) break;
                         if (unsupported.contains(pid)) continue;
@@ -346,9 +387,11 @@ public class MainActivity extends Activity {
                     }
                 }
             } catch (IOException e) {
+                AppLog.logError("живые данные", e);
                 runOnUiThread(() -> setConnectedUi(false));
                 show("Связь потеряна: " + e.getMessage() + "\nПодключитесь заново.");
             } finally {
+                if (obd != null) obd.logTraffic = true;
                 liveRunning = false;
                 runOnUiThread(() -> btnLive.setText("Живые данные"));
             }
@@ -370,6 +413,32 @@ public class MainActivity extends Activity {
         i.putExtra(Intent.EXTRA_SUBJECT, "Отчёт OBD");
         i.putExtra(Intent.EXTRA_TEXT, sb.toString());
         startActivity(Intent.createChooser(i, "Отправить отчёт"));
+    }
+
+    // ---------- история и журнал ----------
+
+    private void showHistory() {
+        liveRunning = false;
+        List<HistoryStore.Entry> all = HistoryStore.readAll(getFilesDir());
+        if (all.isEmpty()) {
+            show("История пуста. Она появится после первой проверки ошибок.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("ИСТОРИЯ ПРОВЕРОК (новые сверху)\n\n");
+        int shown = 0;
+        for (int i = all.size() - 1; i >= 0 && shown < 30; i--, shown++) {
+            sb.append(HistoryStore.describe(all.get(i))).append("\n");
+        }
+        show(sb.toString());
+    }
+
+    private void shareLog() {
+        String text = "ЖУРНАЛ OBD СКАНЕРА\n\n" + AppLog.read(60000);
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_SUBJECT, "Журнал OBD Сканер");
+        i.putExtra(Intent.EXTRA_TEXT, text);
+        startActivity(Intent.createChooser(i, "Отправить журнал"));
     }
 
     @Override
