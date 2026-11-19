@@ -151,6 +151,44 @@ public final class ObdParser {
         return asciiPayload(raw, 9, 2);
     }
 
+    /** Результат проверки систем самопроверки (PID 01). */
+    public static final class Readiness {
+        public final List<String> lines = new ArrayList<>();
+        public int supported = 0;
+        public int notReady = 0;
+    }
+
+    /** Разбирает готовность систем по 4 байтам ответа на 01 01. Для дизеля пока возвращает null. */
+    public static Readiness readiness(List<Integer> d) {
+        if (d == null || d.size() < 4) return null;
+        int b = d.get(1);
+        int c = d.get(2);
+        int e = d.get(3);
+        if (((b >> 3) & 1) == 1) return null; // дизель: другая раскладка битов
+        Readiness r = new Readiness();
+        String[] cont = {"Пропуски зажигания", "Топливная система", "Компоненты"};
+        for (int i = 0; i < 3; i++) addReady(r, cont[i], ((b >> i) & 1) == 1, ((c >> i) & 1) == 0);
+        String[] nc = {"Катализатор", "Нагрев катализатора", "Улавливание паров топлива (EVAP)", "Вторичный воздух"};
+        for (int i = 0; i < 4; i++) addReady(r, nc[i], ((b >> (4 + i)) & 1) == 1, ((c >> (4 + i)) & 1) == 0);
+        String[] de = {"Кондиционер", "Датчики кислорода", "Подогрев датчиков кислорода", "Рециркуляция выхлопа (EGR)"};
+        for (int i = 0; i < 4; i++) addReady(r, de[i], ((e >> i) & 1) == 1, ((e >> (4 + i)) & 1) == 0);
+        return r;
+    }
+
+    private static void addReady(Readiness r, String name, boolean available, boolean complete) {
+        if (!available) {
+            r.lines.add(name + ": не поддерживается этой машиной");
+            return;
+        }
+        r.supported++;
+        if (complete) {
+            r.lines.add(name + ": готов");
+        } else {
+            r.notReady++;
+            r.lines.add(name + ": НЕ ГОТОВ");
+        }
+    }
+
     /** Список PID, которые показываем в «живых данных». */
     public static final int[] LIVE_PIDS = {
             0x0C, 0x0D, 0x05, 0x5C, 0x04, 0x11, 0x0B, 0x10, 0x0F, 0x06, 0x07, 0x2F, 0x42

@@ -35,7 +35,7 @@ public class MainActivity extends Activity {
 
     private TextView status;
     private TextView output;
-    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare, btnHistory, btnLog, btnScan;
+    private Button btnConnect, btnDtc, btnClear, btnLive, btnVin, btnShare, btnHistory, btnLog, btnScan, btnNote, btnTg;
 
     private ObdConnection obd;
     private String deviceName = "";
@@ -112,6 +112,10 @@ public class MainActivity extends Activity {
         btnScan = makeButton("Сканировать блоки и пробег", v -> scanEcus());
         btnHistory = makeButton("История проверок", v -> showHistory());
         root.addView(row(btnScan, btnHistory));
+
+        btnNote = makeButton("Заметка к машине", v -> editNote());
+        btnTg = makeButton("Telegram", v -> telegramDialog());
+        root.addView(row(btnNote, btnTg));
 
         btnShare = makeButton("Отправить отчёт", v -> shareReport());
         btnLog = makeButton("Отправить журнал", v -> shareLog());
@@ -273,6 +277,16 @@ public class MainActivity extends Activity {
                 sb.append("Ошибок по данным блока: ").append(st.get(0) & 0x7F).append("\n");
             }
             sb.append("\n");
+            ObdParser.Readiness rd = ObdParser.readiness(st);
+            if (rd != null) {
+                sb.append("ГОТОВНОСТЬ СИСТЕМ (важно при продаже):\n");
+                for (String l : rd.lines) sb.append("  ").append(l).append("\n");
+                if (rd.notReady >= 2) {
+                    sb.append("⚠ Не готовы несколько систем. Так бывает, если ошибки недавно стирали или отключали аккумулятор.\n");
+                }
+                sb.append("\n");
+                AppLog.log("Готовность систем: не готово " + rd.notReady + " из " + rd.supported);
+            }
             List<List<String>> found = new ArrayList<>();
             String[][] sections = {
                     {"03", "СОХРАНЁННЫЕ ОШИБКИ"},
@@ -312,6 +326,10 @@ public class MainActivity extends Activity {
             HistoryStore.append(getFilesDir(), cur);
             lastDtcText = sb.toString();
             show(lastDtcText);
+            if (ExtraStore.autoSend(this)) {
+                String err = TelegramSender.send(ExtraStore.token(this), ExtraStore.chat(this), buildReportText());
+                toast(err == null ? "Отчёт отправлен в Telegram" : "В Telegram не отправилось: " + err);
+            }
         });
     }
 
@@ -444,11 +462,15 @@ public class MainActivity extends Activity {
 
     // ---------- отчёт ----------
 
-    private void shareReport() {
+    private String buildReportText() {
         StringBuilder sb = new StringBuilder();
         sb.append("ОТЧЁТ OBD\n");
         sb.append(new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(new Date())).append("\n");
-        if (!lastVin.isEmpty()) sb.append("VIN: ").append(lastVin).append("\n");
+        if (!lastVin.isEmpty()) {
+            sb.append("VIN: ").append(lastVin).append("\n");
+            String note = ExtraStore.note(this, lastVin);
+            if (!note.isEmpty()) sb.append("Заметка: ").append(note).append("\n");
+        }
         sb.append("\n");
         sb.append(lastDtcText.isEmpty() ? "Ошибки: ещё не читались\n\n" : lastDtcText + "\n");
         if (!sessionAnomalies.isEmpty()) {
@@ -458,11 +480,76 @@ public class MainActivity extends Activity {
         }
         if (!lastLiveText.isEmpty()) sb.append(lastLiveText).append("\n");
         if (!lastScanText.isEmpty()) sb.append(lastScanText);
+        return sb.toString();
+    }
+
+    private void toast(String msg) {
+        runOnUiThread(() -> android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show());
+    }
+
+    private void shareReport() {
         Intent i = new Intent(Intent.ACTION_SEND);
         i.setType("text/plain");
         i.putExtra(Intent.EXTRA_SUBJECT, "Отчёт OBD");
-        i.putExtra(Intent.EXTRA_TEXT, sb.toString());
+        i.putExtra(Intent.EXTRA_TEXT, buildReportText());
         startActivity(Intent.createChooser(i, "Отправить отчёт"));
+    }
+
+    private void sendReportNow() {
+        worker.submit(() -> {
+            String err = TelegramSender.send(ExtraStore.token(this), ExtraStore.chat(this), buildReportText());
+            toast(err == null ? "Отчёт отправлен в Telegram" : "В Telegram не отправилось: " + err);
+        });
+    }
+
+    private void telegramDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), 0);
+        final android.widget.EditText tok = new android.widget.EditText(this);
+        tok.setHint("Токен бота (из @BotFather)");
+        tok.setText(ExtraStore.token(this));
+        final android.widget.EditText chat = new android.widget.EditText(this);
+        chat.setHint("Номер чата (chat_id)");
+        chat.setText(ExtraStore.chat(this));
+        final android.widget.CheckBox auto = new android.widget.CheckBox(this);
+        auto.setText("Отправлять после каждой проверки ошибок");
+        auto.setChecked(ExtraStore.autoSend(this));
+        box.addView(tok);
+        box.addView(chat);
+        box.addView(auto);
+        new AlertDialog.Builder(this)
+                .setTitle("Telegram")
+                .setView(box)
+                .setPositiveButton("Сохранить", (d, w) -> ExtraStore.saveTelegram(this,
+                        tok.getText().toString().trim(), chat.getText().toString().trim(), auto.isChecked()))
+                .setNeutralButton("Отправить отчёт", (d, w) -> {
+                    ExtraStore.saveTelegram(this, tok.getText().toString().trim(),
+                            chat.getText().toString().trim(), auto.isChecked());
+                    sendReportNow();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void editNote() {
+        if (lastVin.isEmpty()) {
+            show("Сначала нажмите «Прочитать ошибки» — там считывается VIN машины.");
+            return;
+        }
+        final android.widget.EditText et = new android.widget.EditText(this);
+        et.setText(ExtraStore.note(this, lastVin));
+        et.setHint("Например: царапина на двери, новый аккумулятор, сервис 12.11");
+        et.setMinLines(3);
+        new AlertDialog.Builder(this)
+                .setTitle("Заметка к машине " + lastVin)
+                .setView(et)
+                .setPositiveButton("Сохранить", (d, w) -> {
+                    ExtraStore.saveNote(this, lastVin, et.getText().toString().trim());
+                    toast("Заметка сохранена. Она попадёт в отчёт.");
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
     // ---------- история и журнал ----------
