@@ -302,10 +302,16 @@ public class MainActivity extends Activity {
     // ---------- подключение ----------
 
     private void onConnectClicked() {
-        if (Build.VERSION.SDK_INT >= 31
-                && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, 1);
-            return;
+        if (Build.VERSION.SDK_INT >= 31) {
+            List<String> missing = new ArrayList<>();
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
+                missing.add(Manifest.permission.BLUETOOTH_CONNECT);
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED)
+                missing.add(Manifest.permission.BLUETOOTH_SCAN);
+            if (!missing.isEmpty()) {
+                requestPermissions(missing.toArray(new String[0]), 1);
+                return;
+            }
         }
         chooseDevice();
     }
@@ -313,10 +319,11 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         super.onRequestPermissionsResult(code, perms, res);
-        if (code == 1 && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) {
-            chooseDevice();
-        } else {
-            show("Нужно разрешение «Устройства поблизости» — без него Bluetooth не работает.");
+        if (code == 1) {
+            boolean allGranted = true;
+            for (int r : res) if (r != PackageManager.PERMISSION_GRANTED) { allGranted = false; break; }
+            if (allGranted) chooseDevice();
+            else show("Нужно разрешение «Устройства поблизости» — без него Bluetooth не работает.");
         }
     }
 
